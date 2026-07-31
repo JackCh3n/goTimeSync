@@ -28,7 +28,7 @@ type effectiveConfig struct {
 	Strategy   string // 多源策略: fallback(顺序试错) | best(并发择优取最小延时)
 }
 
-// fileConfig 对应 winTimeSync.json 的字段（JSON 名称即对外约定）。
+// fileConfig 对应 goTimeSync.json 的字段（JSON 名称即对外约定）。
 type fileConfig struct {
 	Source     string `json:"source"`
 	Chain      string `json:"chain"`
@@ -69,20 +69,20 @@ func exeDir() string {
 	return filepath.Dir(exe)
 }
 
-// configFilePath 返回默认配置文件路径（可执行文件同目录下的 winTimeSync.json）。
+// configFilePath 返回默认配置文件路径（可执行文件同目录下的 goTimeSync.json）。
 func configFilePath() string {
 	if *configFile != "" {
 		return *configFile
 	}
-	return filepath.Join(exeDir(), "winTimeSync.json")
+	return filepath.Join(exeDir(), "goTimeSync.json")
 }
 
-// statusFilePath 返回默认状态文件路径（可执行文件同目录下的 winTimeSync.status.json）。
+// statusFilePath 返回默认状态文件路径（可执行文件同目录下的 goTimeSync.status.json）。
 func statusFilePath() string {
 	if *statusFile != "" {
 		return *statusFile
 	}
-	return filepath.Join(exeDir(), "winTimeSync.status.json")
+	return filepath.Join(exeDir(), "goTimeSync.status.json")
 }
 
 // initLogger 配置日志输出。启用日志文件时追加写入；quiet 模式不输出到控制台（但仍写文件）。

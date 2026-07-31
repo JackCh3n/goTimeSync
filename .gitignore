@@ -1,6 +1,6 @@
 # 编译产物
-winTimeSync
-winTimeSync.exe
+goTimeSync
+goTimeSync.exe
 
 # Go 构建缓存
 *.test
@@ -14,4 +14,4 @@ Thumbs.db
 *.exe~
 
 # 运行时状态文件
-winTimeSync.status.json
+goTimeSync.status.json

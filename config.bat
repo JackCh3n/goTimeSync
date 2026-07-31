@@ -4,14 +4,14 @@ setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 echo ============================================================
-echo          winTimeSync 时间同步 配置向导
+echo          goTimeSync 时间同步 配置向导
 echo      （面向小白，按提示选择即可）
 echo ============================================================
 echo.
 
 :: 检查程序是否存在
-if not exist winTimeSync.exe (
-    echo [错误] 未找到 winTimeSync.exe，请先编译（go build -o winTimeSync.exe .）。
+if not exist goTimeSync.exe (
+    echo [错误] 未找到 goTimeSync.exe，请先编译（go build -o goTimeSync.exe .）。
     echo.
     pause
     exit /b 1
@@ -79,23 +79,23 @@ set "ARGS=!ARGS! -interval !INTERVAL!"
 
 echo.
 echo ------------------- 配置预览 -------------------
-echo   winTimeSync.exe !ARGS!
+echo   goTimeSync.exe !ARGS!
 echo -------------------------------------------------
 
 if "%RUNMODE%"=="1" (
     echo.
     echo 正在执行【一次测试（仅检查偏差）】...
-    winTimeSync.exe once !ARGS! -check
+    goTimeSync.exe once !ARGS! -check
 ) else if "%RUNMODE%"=="2" (
     echo.
     echo 开始【持续同步】（按 Ctrl+C 停止）...
-    winTimeSync.exe run !ARGS!
+    goTimeSync.exe run !ARGS!
 ) else if "%RUNMODE%"=="3" (
     echo.
     echo 正在【注册开机启动】...
-    winTimeSync.exe install !ARGS!
+    goTimeSync.exe install !ARGS!
     echo.
-    winTimeSync.exe status
+    goTimeSync.exe status
 ) else (
     echo 未选择有效的运行方式，已退出。
 )

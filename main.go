@@ -13,7 +13,7 @@ import (
 var Version = "dev"
 
 var (
-	configFile     = flag.String("config", "", "配置文件路径（默认: 可执行文件同目录/winTimeSync.json）。run 模式每次循环重读")
+	configFile     = flag.String("config", "", "配置文件路径（默认: 可执行文件同目录/goTimeSync.json）。run 模式每次循环重读")
 	source         = flag.String("source", "ntp", "单源模式时间源: ntp | http（未指定 -chain 时生效）")
 	chain          = flag.String("chain", "", "主备链：按顺序尝试，用逗号分隔。每项 ntp:地址 或 http:地址。例: ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time")
 	ntpServer      = flag.String("ntp-server", "pool.ntp.org:123", "NTP 服务器地址 (source=ntp 时生效)")
@@ -22,7 +22,7 @@ var (
 	check          = flag.Bool("check", false, "仅检查时间偏差，不修改系统时间")
 	timeoutSec     = flag.Int("timeout", 5, "单次请求超时（秒）")
 	logFile        = flag.String("log", "", "日志文件路径；启用后日志追加写入该文件（quiet 时不输出控制台）")
-	statusFile     = flag.String("status-file", "", "同步状态文件路径（默认: 同目录/winTimeSync.status.json）")
+	statusFile     = flag.String("status-file", "", "同步状态文件路径（默认: 同目录/goTimeSync.status.json）")
 	minOffset      = flag.Int64("min-offset", 0, "偏移阈值(ms)：绝对值小于该值则跳过设置（0=不限制）")
 	maxOffset      = flag.Int64("max-offset", 0, "大跳保护(ms)：绝对值大于该值视为异常源，拒绝设置并尝试下一个（0=不限制）")
 	strategy       = flag.String("strategy", "fallback", "多源策略: fallback(顺序试错) | best(并发择优，取最小延时)")
@@ -142,7 +142,7 @@ func main() {
 			fmt.Println("未注册开机启动")
 		}
 	case "version", "-v", "--version":
-		fmt.Println("winTimeSync v" + Version)
+		fmt.Println("goTimeSync v" + Version)
 	default:
 		printUsage()
 		os.Exit(1)
@@ -151,7 +151,7 @@ func main() {
 
 func runLoop(first effectiveConfig) {
 	ec := first
-	logf("winTimeSync 启动 | 主备链=[%s] | 间隔=%d秒 | 检查=%v | 策略=%s",
+	logf("goTimeSync 启动 | 主备链=[%s] | 间隔=%d秒 | 检查=%v | 策略=%s",
 		strings.Join(chainLabels(ec), " > "), ec.Interval, ec.Check, ec.Strategy)
 	if err := doSync(ec); err != nil {
 		fmt.Fprintf(os.Stderr, "初始同步失败: %v\n", err)
@@ -275,19 +275,19 @@ func applyCorrection(ec effectiveConfig, src timeSource, corrected time.Time, of
 }
 
 func printUsage() {
-	fmt.Print(`winTimeSync - 轻量级时间同步工具（NTP / 内网 HTTP 双协议；server 模式可同时充当 NTP+HTTP 时间源，支持开机启动）
+	fmt.Print(`goTimeSync - 轻量级时间同步工具（NTP / 内网 HTTP 双协议；server 模式可同时充当 NTP+HTTP 时间源，支持开机启动）
 
 用法:
-  winTimeSync run                      持续运行，按 -interval 周期同步（默认 3600 秒）
-  winTimeSync once                     立即同步一次后退出
-  winTimeSync server                   启动 HTTP 时间服务器，对内网提供时间源
-  winTimeSync install                  注册为系统开机启动（计划任务，需管理员）
-  winTimeSync uninstall                移除开机启动
-  winTimeSync status                   查看是否已注册开机启动
-  winTimeSync version                  查看版本
+  goTimeSync run                      持续运行，按 -interval 周期同步（默认 3600 秒）
+  goTimeSync once                     立即同步一次后退出
+  goTimeSync server                   启动 HTTP 时间服务器，对内网提供时间源
+  goTimeSync install                  注册为系统开机启动（计划任务，需管理员）
+  goTimeSync uninstall                移除开机启动
+  goTimeSync status                   查看是否已注册开机启动
+  goTimeSync version                  查看版本
 
 通用参数:
-  -config string       配置文件路径（默认 同目录/winTimeSync.json），run 模式每次循环重读
+  -config string       配置文件路径（默认 同目录/goTimeSync.json），run 模式每次循环重读
   -source string       单源模式时间源: ntp | http（未指定 -chain 时生效，默认 ntp）
   -chain string        主备链：按顺序尝试，逗号分隔。每项 ntp:地址 或 http:地址
   -ntp-server string   NTP 服务器（默认 pool.ntp.org:123）
@@ -299,7 +299,7 @@ func printUsage() {
   -max-offset int      大跳保护(ms)：绝对值大于该值视为异常源，拒绝设置并尝试下一个（默认 0=不限制）
   -check               仅检查偏差，不修改系统时间
   -log string          日志文件路径；启用后日志追加写入该文件
-  -status-file string  同步状态文件路径（默认 同目录/winTimeSync.status.json）
+  -status-file string  同步状态文件路径（默认 同目录/goTimeSync.status.json）
   -quiet               安静模式，仅输出错误（日志文件仍记录）
 
 server 模式参数:
@@ -310,28 +310,28 @@ server 模式参数:
 
 示例:
   # 单源
-  winTimeSync run -source ntp -interval 600
-  winTimeSync run -source http -http-url http://192.168.1.10:8080/time -interval 60
+  goTimeSync run -source ntp -interval 600
+  goTimeSync run -source http -http-url http://192.168.1.10:8080/time -interval 60
 
   # 主备：主用 NTP，备用 HTTP
-  winTimeSync run -chain "ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time" -interval 60
+  goTimeSync run -chain "ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time" -interval 60
 
   # 多上游择优（best）：并发请求全部，取最小延时
-  winTimeSync run -strategy best -chain "ntp:time1.aliyun.com:123,ntp:time2.aliyun.com:123,http:http://10.0.0.1/time" -interval 60
+  goTimeSync run -strategy best -chain "ntp:time1.aliyun.com:123,ntp:time2.aliyun.com:123,http:http://10.0.0.1/time" -interval 60
 
   # 大跳保护：偏移超过 1 小时视为异常源拒绝
-  winTimeSync run -chain "ntp:pool.ntp.org:123" -max-offset 3600000
+  goTimeSync run -chain "ntp:pool.ntp.org:123" -max-offset 3600000
 
-  # 配置文件驱动（改 winTimeSync.json 即生效，无需重启/重装开机任务）
-  winTimeSync run -config winTimeSync.json
+  # 配置文件驱动（改 goTimeSync.json 即生效，无需重启/重装开机任务）
+  goTimeSync run -config goTimeSync.json
 
   # A 机：同时作为 NTP(123) + HTTP 时间源，并后台用 NTP 自校准（需管理员，且 123 端口未被占用）
-  winTimeSync server -server-addr :8080 -server-ntp-port 123
+  goTimeSync server -server-addr :8080 -server-ntp-port 123
 
   # B 机：用 NTP 同步 A（假设 A 的 IP 为 192.168.1.10）
-  winTimeSync run -source ntp -ntp-server 192.168.1.10:123 -interval 60
+  goTimeSync run -source ntp -ntp-server 192.168.1.10:123 -interval 60
 
-  winTimeSync once -chain "ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time" -check
-  winTimeSync install -chain "ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time" -interval 60   （请以管理员身份运行）
+  goTimeSync once -chain "ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time" -check
+  goTimeSync install -chain "ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time" -interval 60   （请以管理员身份运行）
 `)
 }

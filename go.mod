@@ -1,3 +1,3 @@
-module winTimeSync
+module goTimeSync
 
 go 1.22

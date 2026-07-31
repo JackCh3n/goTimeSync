@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>winTimeSync · 轻量级 Windows 时间同步工具</title>
+<title>goTimeSync · 轻量级 Windows 时间同步工具</title>
 <style>
   :root {
     --bg: #ffffff;
@@ -173,7 +173,7 @@
 <header class="hero">
   <div class="wrap">
     <span class="badge">⚡ 零依赖 · 单文件 exe · Windows 专用</span>
-    <h1 class="title">winTimeSync</h1>
+    <h1 class="title">goTimeSync</h1>
     <p class="subtitle">
       一个用 Go 写的轻量级 Windows 时间同步工具：兼容标准 <b>NTP 协议</b>，
       也支持通过<b>内网 HTTP 地址</b>按服务端时间校准；可配置同步间隔、主备时间源，
@@ -203,10 +203,10 @@
     <div class="dl-card">
       <div class="dl-icon">🕰️</div>
       <div class="dl-info">
-        <h3>winTimeSync.exe <span class="ver">v1.13</span></h3>
+        <h3>goTimeSync.exe <span class="ver">v1.13</span></h3>
         <div class="dl-meta">Windows · amd64 · 约 8.06 MB · 零外部依赖</div>
         <div style="display:flex;gap:12px;flex-wrap:wrap;">
-          <a class="btn btn-down" href="winTimeSync.exe" download>⬇ 下载 exe</a>
+          <a class="btn btn-down" href="goTimeSync.exe" download>⬇ 下载 exe</a>
           <a class="btn btn-ghost" href="config.bat" download>⬇ 下载 config.bat</a>
         </div>
         <div class="hash-box" style="margin-top:16px;">
@@ -221,14 +221,14 @@ setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 echo ============================================================
-echo          winTimeSync 时间同步 配置向导
+echo          goTimeSync 时间同步 配置向导
 echo      （面向小白，按提示选择即可）
 echo ============================================================
 echo.
 
 :: 检查程序是否存在
-if not exist winTimeSync.exe (
-    echo [错误] 未找到 winTimeSync.exe，请先编译（go build -o winTimeSync.exe .）。
+if not exist goTimeSync.exe (
+    echo [错误] 未找到 goTimeSync.exe，请先编译（go build -o goTimeSync.exe .）。
     echo.
     pause
     exit /b 1
@@ -296,23 +296,23 @@ set "ARGS=!ARGS! -interval !INTERVAL!"
 
 echo.
 echo ------------------- 配置预览 -------------------
-echo   winTimeSync.exe !ARGS!
+echo   goTimeSync.exe !ARGS!
 echo -------------------------------------------------
 
 if "%RUNMODE%"=="1" (
     echo.
     echo 正在执行【一次测试（仅检查偏差）】...
-    winTimeSync.exe once !ARGS! -check
+    goTimeSync.exe once !ARGS! -check
 ) else if "%RUNMODE%"=="2" (
     echo.
     echo 开始【持续同步】（按 Ctrl+C 停止）...
-    winTimeSync.exe run !ARGS!
+    goTimeSync.exe run !ARGS!
 ) else if "%RUNMODE%"=="3" (
     echo.
     echo 正在【注册开机启动】...
-    winTimeSync.exe install !ARGS!
+    goTimeSync.exe install !ARGS!
     echo.
-    winTimeSync.exe status
+    goTimeSync.exe status
 ) else (
     echo 未选择有效的运行方式，已退出。
 )
@@ -430,10 +430,10 @@ pause</div>
         💡 实测拓扑：A 机既对内供时又后台自校准，B 机直接用 NTP 同步 A，偏移 ≈ 0ms：
         <div class="code" style="margin-top:12px;font-size:12.5px;">
 <span class="c"># A 机：启动 NTP(UDP) + HTTP 双协议时间源</span>
-winTimeSync.exe server -server-addr :18090 -server-ntp-port 123 -server-ntp=false
+goTimeSync.exe server -server-addr :18090 -server-ntp-port 123 -server-ntp=false
 
 <span class="c"># B 机：用 NTP 协议同步 A</span>
-winTimeSync.exe once -source ntp -ntp-server &lt;A的IP&gt;:123 -check
+goTimeSync.exe once -source ntp -ntp-server &lt;A的IP&gt;:123 -check
 <span class="c"># → 命中 ntp:A，偏移 ≈ 0ms</span>
         </div>
       </div>
@@ -453,23 +453,23 @@ winTimeSync.exe once -source ntp -ntp-server &lt;A的IP&gt;:123 -check
         <h3 style="margin-bottom:12px;">常用命令</h3>
         <div class="code">
 <span class="c"># NTP，每 10 分钟同步</span>
-winTimeSync.exe <span class="k">run</span> -source ntp -interval 600
+goTimeSync.exe <span class="k">run</span> -source ntp -interval 600
 
 <span class="c"># 内网 HTTP 源，每 60 秒同步</span>
-winTimeSync.exe <span class="k">run</span> -source http -http-url http://127.0.0.1:8080/time -interval 60
+goTimeSync.exe <span class="k">run</span> -source http -http-url http://127.0.0.1:8080/time -interval 60
 
 <span class="c"># 主用 NTP，备用 HTTP</span>
-winTimeSync.exe <span class="k">run</span> -chain <span class="s">"ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time"</span> -interval 60
+goTimeSync.exe <span class="k">run</span> -chain <span class="s">"ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time"</span> -interval 60
 
 <span class="c"># 只检查偏差不改时间</span>
-winTimeSync.exe <span class="k">once</span> -source ntp -check
+goTimeSync.exe <span class="k">once</span> -source ntp -check
         </div>
       </div>
       <div>
         <h3 style="margin-bottom:12px;">双协议时间源 & 开机启动</h3>
         <div class="code">
 <span class="c"># A：同时提供 NTP + HTTP（需管理员）</span>
-winTimeSync.exe <span class="k">server</span> -server-addr :8080 -server-ntp-port 123 -server-ntp=true
+goTimeSync.exe <span class="k">server</span> -server-addr :8080 -server-ntp-port 123 -server-ntp=true
 
 <span class="c"># nginx 直接提供 /time（无需本软件）</span>
 <span class="c"># location = /time {</span>
@@ -477,9 +477,9 @@ winTimeSync.exe <span class="k">server</span> -server-addr :8080 -server-ntp-por
 <span class="c"># }</span>
 
 <span class="c"># 注册 / 查看 / 移除 开机启动</span>
-winTimeSync.exe <span class="k">install</span> -chain <span class="s">"ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time"</span> -interval 60
-winTimeSync.exe <span class="k">status</span>
-winTimeSync.exe <span class="k">uninstall</span>
+goTimeSync.exe <span class="k">install</span> -chain <span class="s">"ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time"</span> -interval 60
+goTimeSync.exe <span class="k">status</span>
+goTimeSync.exe <span class="k">uninstall</span>
         </div>
       </div>
     </div>
@@ -510,7 +510,7 @@ winTimeSync.exe <span class="k">uninstall</span>
       <div class="step">
         <div class="num">1</div>
         <h4>下载 / 编译 exe</h4>
-        <p>点击上方下载，或进入项目目录执行 <code>go build -o winTimeSync.exe .</code> 生成单文件程序。</p>
+        <p>点击上方下载，或进入项目目录执行 <code>go build -o goTimeSync.exe .</code> 生成单文件程序。</p>
       </div>
       <div class="step">
         <div class="num">2</div>
@@ -532,7 +532,7 @@ winTimeSync.exe <span class="k">uninstall</span>
     <span>本软件页面由</span>
     <span class="nm">Hy3</span>
     <span>亲手打造 ·</span>
-    <b>winTimeSync v1.13</b>
+    <b>goTimeSync v1.13</b>
   </div>
   <p class="disclaimer">
     本工具仅用于内网时间校准与运维辅助。设置系统时间与注册开机任务需管理员权限；NTP 服务端默认占用 UDP 123 特权端口，若被系统 w32time 占用请改用其它端口或先停止该服务。下载文件请核对上方 SHA256 哈希以确保完整。

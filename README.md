@@ -1,6 +1,6 @@
-# winTimeSync
+# goTimeSync
 
-> 🔗 GitHub 仓库：https://github.com/JackCh3n/winTimeSync
+> 🔗 GitHub 仓库：https://github.com/JackCh3n/goTimeSync
 
 轻量级 Windows 时间同步小工具（Go 编写，**零外部依赖**）。
 
@@ -21,20 +21,20 @@
 需要 Go 1.22+。
 
 - **推荐（自动注入版本号）**：双击 `build.bat`，版本号按 `1.00 + 0.01 × git 提交次数` 自动计算并通过 `-ldflags` 注入 `main.Version`。
-- 手动编译：`go build -o winTimeSync.exe .`（此时 `version` 子命令显示 `dev`）。
+- 手动编译：`go build -o goTimeSync.exe .`（此时 `version` 子命令显示 `dev`）。
 
 版本规则：每提交一次递增 0.01（如第 9 次提交为 `v1.09`），`version` 子命令与 `build.bat` 均遵循此规则。
 
 ## 使用
 
 ```bash
-winTimeSync run                      持续运行，按 -interval 周期同步（默认 3600 秒）
-winTimeSync once                     立即同步一次后退出
-winTimeSync server                   启动 HTTP 时间服务器，对内网提供时间源
-winTimeSync install                  注册为系统开机启动（计划任务，需管理员）
-winTimeSync uninstall                移除开机启动
-winTimeSync status                   查看是否已注册开机启动
-winTimeSync version                  查看版本
+goTimeSync run                      持续运行，按 -interval 周期同步（默认 3600 秒）
+goTimeSync once                     立即同步一次后退出
+goTimeSync server                   启动 HTTP 时间服务器，对内网提供时间源
+goTimeSync install                  注册为系统开机启动（计划任务，需管理员）
+goTimeSync uninstall                移除开机启动
+goTimeSync status                   查看是否已注册开机启动
+goTimeSync version                  查看版本
 ```
 
 ### 通用参数
@@ -56,21 +56,21 @@ server 模式参数：`-server-addr`（监听地址，默认 `:8080`）、`-serv
 
 ```bash
 # NTP，每 10 分钟同步一次（单源模式）
-winTimeSync.exe run -source ntp -interval 600
+goTimeSync.exe run -source ntp -interval 600
 
 # 内网 HTTP 时间源，每 60 秒同步（单源模式）
-winTimeSync.exe run -source http -http-url http://127.0.0.1:8080/time -interval 60
+goTimeSync.exe run -source http -http-url http://127.0.0.1:8080/time -interval 60
 
 # 只检查偏差不改系统时间
-winTimeSync.exe once -source ntp -check
+goTimeSync.exe once -source ntp -check
 
 # 把本机作为内网时间源
-winTimeSync.exe server -server-addr :8080
+goTimeSync.exe server -server-addr :8080
 
 # 注册 / 查看 / 移除开机启动（需管理员）
-winTimeSync.exe install
-winTimeSync.exe status
-winTimeSync.exe uninstall
+goTimeSync.exe install
+goTimeSync.exe status
+goTimeSync.exe uninstall
 ```
 
 ## 主备模式（failover）
@@ -79,13 +79,13 @@ winTimeSync.exe uninstall
 
 ```bash
 # 主用 NTP，备用 HTTP
-winTimeSync.exe run -chain "ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time" -interval 60
+goTimeSync.exe run -chain "ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time" -interval 60
 
 # 主用 NTP A，备用 NTP B，备用 NTP C
-winTimeSync.exe run -chain "ntp:time1.aliyun.com:123,ntp:time2.aliyun.com:123,ntp:time.windows.com:123" -interval 300
+goTimeSync.exe run -chain "ntp:time1.aliyun.com:123,ntp:time2.aliyun.com:123,ntp:time.windows.com:123" -interval 300
 
 # 开机启动也支持主备链（安装时的参数会原样带入开机任务）
-winTimeSync.exe install -chain "ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time" -interval 60
+goTimeSync.exe install -chain "ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time" -interval 60
 ```
 
 > 未指定 `-chain` 时回退到旧的 `-source` 单源模式，保持向后兼容。
@@ -128,7 +128,7 @@ winTimeSync.exe install -chain "ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/
   }
   ```
 
-  重载配置：`nginx -s reload`。随后使用 `winTimeSync.exe run -source http -http-url http://<服务器IP>:8888/time -interval 60` 即可。
+  重载配置：`nginx -s reload`。随后使用 `goTimeSync.exe run -source http -http-url http://<服务器IP>:8888/time -interval 60` 即可。
 
 > 说明：nginx 内置变量 `$msec` 可返回带毫秒的浮点时间（如 `1783331459.123`），但工具的 `unix` 字段要求整数，故示例只用 `$time_iso8601`（RFC3339 字符串）。若只需整秒精度，最简方案的 `Date` 头已足够。
 
@@ -143,13 +143,13 @@ winTimeSync.exe install -chain "ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/
 
 ```bash
 # A 机（需管理员，且 123 端口未被 w32time 等占用）：
-winTimeSync.exe server -server-addr :8080 -server-ntp-port 123
+goTimeSync.exe server -server-addr :8080 -server-ntp-port 123
 
 # B 机用标准 NTP 同步 A：
-winTimeSync.exe run -source ntp -ntp-server <A的IP>:123 -interval 60
+goTimeSync.exe run -source ntp -ntp-server <A的IP>:123 -interval 60
 
 # 或 B 机主备：主用 A 的 NTP，备用 A 的 HTTP
-winTimeSync.exe run -chain "ntp:<A的IP>:123,http:http://<A的IP>:8080/time" -interval 60
+goTimeSync.exe run -chain "ntp:<A的IP>:123,http:http://<A的IP>:8080/time" -interval 60
 ```
 
 > 端口说明：UDP 123 是系统特权端口，启动 NTP 服务端**必须管理员**。若该端口已被 Windows 自带 `w32time` 占用，先停止它（`net stop w32time`）或改用其它端口（如 `-server-ntp-port 12345`，B 机相应用 `<A的IP>:12345`）。

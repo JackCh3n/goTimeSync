@@ -48,13 +48,13 @@ jobs:
         run: |
           mkdir -p dist
           go build -ldflags "-s -w -X main.Version=${{ steps.ver.outputs.version }}" \
-            -o "dist/winTimeSync-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" .
+            -o "dist/goTimeSync-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: winTimeSync-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/winTimeSync-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          name: goTimeSync-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/goTimeSync-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
 
   release:
     name: create release
@@ -81,23 +81,23 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum * > winTimeSync-${{ steps.ver.outputs.version }}-sha256.txt
-          cat winTimeSync-${{ steps.ver.outputs.version }}-sha256.txt
+          sha256sum * > goTimeSync-${{ steps.ver.outputs.version }}-sha256.txt
+          cat goTimeSync-${{ steps.ver.outputs.version }}-sha256.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.ver.outputs.version }}
-          name: winTimeSync v${{ steps.ver.outputs.version }}
+          name: goTimeSync v${{ steps.ver.outputs.version }}
           body: |
-            winTimeSync v${{ steps.ver.outputs.version }}
+            goTimeSync v${{ steps.ver.outputs.version }}
             - NTP / 内网 HTTP 双协议时间源
             - 主备链(-chain) 与多上游择优(-strategy best)
             - 偏移阈值(-min-offset) 与大跳保护(-max-offset)
-            - 配置文件(winTimeSync.json) 驱动、日志落盘(-log)、状态文件(-status-file)
+            - 配置文件(goTimeSync.json) 驱动、日志落盘(-log)、状态文件(-status-file)
             - server 模式可同时充当 NTP+HTTP 时间源
             - 跨平台：Windows / Linux(amd64,arm64) / macOS(amd64,arm64)
           files: |
-            dist/winTimeSync-*
+            dist/goTimeSync-*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

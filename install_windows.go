@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const taskName = "WinTimeSync"
+const taskName = "GoTimeSync"
 
 // exePath 返回当前可执行文件的绝对路径。
 func exePath() (string, error) {
