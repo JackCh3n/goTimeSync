@@ -1,4 +1,4 @@
-@chcp 65001 >nul
+﻿@chcp 65001 >nul
 @echo off
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
