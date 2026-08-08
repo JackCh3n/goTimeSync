@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>goTimeSync · 轻量级 Windows 时间同步工具</title>
+<title>goTimeSync · 轻量级跨平台时间同步工具</title>
 <style>
   :root {
     --bg: #ffffff;
@@ -175,7 +175,7 @@
     <span class="badge">⚡ 零依赖 · 单文件 exe · Windows 专用</span>
     <h1 class="title">goTimeSync</h1>
     <p class="subtitle">
-      一个用 Go 写的轻量级 Windows 时间同步工具：兼容标准 <b>NTP 协议</b>，
+      一个用 Go 写的轻量级<b>跨平台</b>（Windows / Linux / macOS）时间同步工具：兼容标准 <b>NTP 协议</b>，
       也支持通过<b>内网 HTTP 地址</b>按服务端时间校准；可配置同步间隔、主备时间源，
       还能把本机一键变成 <b>NTP + HTTP 双协议</b>时间源，并<b>开机自动运行</b>。
     </p>
@@ -188,7 +188,7 @@
     <div class="meta-row">
       <div><b>双协议</b> · NTP / 内网 HTTP</div>
       <div><b>主备链</b> · 自动故障转移</div>
-      <div><b>开机启动</b> · 系统级计划任务</div>
+      <div><b>开机启动</b> · 计划任务 / systemd / launchd</div>
       <div><b>中文向导</b> · config.bat</div>
     </div>
   </div>
@@ -350,7 +350,7 @@ pause</div>
       <div class="card">
         <div class="ic">🚀</div>
         <h3>开机自动启动</h3>
-        <p>通过 schtasks 注册系统级 onstart 计划任务（SYSTEM 账户），无需登录用户即可运行。</p>
+        <p>Windows 通过 schtasks 注册系统级 onstart 计划任务（SYSTEM 账户）；Linux 生成 systemd 单元，macOS 生成 launchd 配置，均可实现无需登录即开机自启。</p>
       </div>
       <div class="card">
         <div class="ic">🧩</div>

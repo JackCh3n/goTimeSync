@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -17,6 +18,7 @@ type effectiveConfig struct {
 	Chain      string
 	NTPServer  string
 	HTTPURL    string
+	HTTPMethod string
 	Interval   int
 	Timeout    int
 	Check      bool
@@ -34,6 +36,7 @@ type fileConfig struct {
 	Chain      string `json:"chain"`
 	NTPServer  string `json:"ntp_server"`
 	HTTPURL    string `json:"http_url"`
+	HTTPMethod string `json:"http_method"`
 	Interval   int    `json:"interval"`
 	Timeout    int    `json:"timeout"`
 	Check      bool   `json:"check"`
@@ -53,6 +56,10 @@ var (
 	logOut io.Writer = os.Stdout
 	logMu  sync.Mutex
 )
+
+// timeSetMu 保护对系统时钟的写入。run 模式与 server 模式的后台 NTP 自校准可能并发
+// 修改系统时间，若同时运行会造成竞态，故统一加锁串行化。
+var timeSetMu sync.Mutex
 
 // detectCLISetFlags 在 flag 解析后调用一次，记录哪些 flag 被显式设置。
 func detectCLISetFlags() {
@@ -85,22 +92,64 @@ func statusFilePath() string {
 	return filepath.Join(exeDir(), "goTimeSync.status.json")
 }
 
-// initLogger 配置日志输出。启用日志文件时追加写入；quiet 模式不输出到控制台（但仍写文件）。
-func initLogger(logPath string, quiet bool) {
-	if logPath == "" {
+// dailyLogWriter 按「日志根目录/年月/日.log」组织文件，跨天自动切换到新文件。
+// 例如 -log C:\logs 时，2026-08-08 的日志写入 C:\logs\202608\8.log。
+type dailyLogWriter struct {
+	dir  string
+	ym   string // 当前打开的 年月（200601）
+	day  int    // 当前打开的 日
+	file *os.File
+}
+
+// open 打开（或切换）到今天对应的日志文件。
+func (w *dailyLogWriter) open() error {
+	now := time.Now()
+	ym := now.Format("200601")
+	day := now.Day()
+	if w.file != nil && w.ym == ym && w.day == day {
+		return nil
+	}
+	if w.file != nil {
+		_ = w.file.Close()
+		w.file = nil
+	}
+	dir := filepath.Join(w.dir, ym)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, strconv.Itoa(day)+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	w.ym, w.day, w.file = ym, day, f
+	return nil
+}
+
+// Write 实现 io.Writer：写前确保文件属于当天，跨天则切换文件。
+func (w *dailyLogWriter) Write(p []byte) (int, error) {
+	if err := w.open(); err != nil {
+		return 0, err
+	}
+	return w.file.Write(p)
+}
+
+// initLogger 配置日志输出。logRoot 非空时按「根目录/年月/日.log」逐日落盘；
+// 为空则不写文件。quiet 模式不输出到控制台（但仍写文件）。
+func initLogger(logRoot string, quiet bool) {
+	if logRoot == "" {
 		logOut = os.Stdout
 		return
 	}
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "警告: 无法打开日志文件 %s: %v（仅输出到控制台）\n", logPath, err)
+	w := &dailyLogWriter{dir: logRoot}
+	if err := w.open(); err != nil {
+		fmt.Fprintf(os.Stderr, "警告: 无法创建日志目录 %s: %v（仅输出到控制台）\n", logRoot, err)
 		logOut = os.Stdout
 		return
 	}
 	if quiet {
-		logOut = f
+		logOut = w
 	} else {
-		logOut = io.MultiWriter(f, os.Stdout)
+		logOut = io.MultiWriter(w, os.Stdout)
 	}
 }
 
@@ -120,6 +169,7 @@ func resolveConfig() effectiveConfig {
 		Chain:      *chain,
 		NTPServer:  *ntpServer,
 		HTTPURL:    *httpURL,
+		HTTPMethod: *httpMethod,
 		Interval:   *interval,
 		Timeout:    *timeoutSec,
 		Check:      *check,
@@ -146,6 +196,9 @@ func resolveConfig() effectiveConfig {
 				}
 				if fc.HTTPURL != "" {
 					ec.HTTPURL = fc.HTTPURL
+				}
+				if fc.HTTPMethod != "" {
+					ec.HTTPMethod = fc.HTTPMethod
 				}
 				if fc.Interval != 0 {
 					ec.Interval = fc.Interval
@@ -192,6 +245,9 @@ func resolveConfig() effectiveConfig {
 	if cliSetFlags["http-url"] {
 		ec.HTTPURL = *httpURL
 	}
+	if cliSetFlags["http-method"] {
+		ec.HTTPMethod = *httpMethod
+	}
 	if cliSetFlags["interval"] {
 		ec.Interval = *interval
 	}
@@ -234,20 +290,56 @@ func resolveConfig() effectiveConfig {
 
 // syncStatus 是写入状态文件的 JSON 结构。
 type syncStatus struct {
-	LastSync string  `json:"last_sync"`
+	LastSync string       `json:"last_sync"`
+	Source   string       `json:"source"`
+	OffsetMs float64      `json:"offset_ms"`
+	DelayMs  float64      `json:"delay_ms"`
+	OK       bool         `json:"ok"`
+	Action   string       `json:"action"`
+	Error    string       `json:"error,omitempty"`
+	History  []syncRecord `json:"history,omitempty"` // 最近 N 次同步历史（新记录在前）
+}
+
+// syncRecord 保存单次同步的摘要，用于历史回溯与健康监控。
+type syncRecord struct {
+	Time     string  `json:"time"`
 	Source   string  `json:"source"`
 	OffsetMs float64 `json:"offset_ms"`
 	DelayMs  float64 `json:"delay_ms"`
 	OK       bool    `json:"ok"`
 	Action   string  `json:"action"`
-	Error    string  `json:"error,omitempty"`
 }
 
-// writeStatus 原子写入同步状态文件（先写临时文件再 rename）。
+// maxHistory 状态文件保留的历史同步记录条数。
+const maxHistory = 10
+
+// writeStatus 原子写入同步状态文件（先写临时文件再 rename），并保留最近 maxHistory 条历史。
 func writeStatus(path string, st syncStatus) {
 	if path == "" {
 		return
 	}
+	cur := syncStatus{}
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &cur)
+	}
+	// 追加本次记录到历史头部，截断到 maxHistory 条
+	rec := syncRecord{
+		Time:     st.LastSync,
+		Source:   st.Source,
+		OffsetMs: st.OffsetMs,
+		DelayMs:  st.DelayMs,
+		OK:       st.OK,
+		Action:   st.Action,
+	}
+	if st.Error != "" {
+		rec.Action = st.Error
+	}
+	hist := append([]syncRecord{rec}, cur.History...)
+	if len(hist) > maxHistory {
+		hist = hist[:maxHistory]
+	}
+	st.History = hist
+
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return

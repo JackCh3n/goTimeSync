@@ -18,6 +18,7 @@ var (
 	chain          = flag.String("chain", "", "主备链：按顺序尝试，用逗号分隔。每项 ntp:地址 或 http:地址。例: ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time")
 	ntpServer      = flag.String("ntp-server", "pool.ntp.org:123", "NTP 服务器地址 (source=ntp 时生效)")
 	httpURL        = flag.String("http-url", "http://127.0.0.1:8080/time", "HTTP 时间服务器地址 (source=http 时生效)")
+	httpMethod     = flag.String("http-method", "", "HTTP 时间源请求方法 (get|post，默认 get)")
 	interval       = flag.Int("interval", 3600, "同步间隔（秒），run 模式生效")
 	check          = flag.Bool("check", false, "仅检查时间偏差，不修改系统时间")
 	timeoutSec     = flag.Int("timeout", 5, "单次请求超时（秒）")
@@ -106,16 +107,30 @@ func main() {
 	switch cmd {
 	case "run":
 		ec := resolveConfig()
+		if err := validateConfig(ec); err != nil {
+			fmt.Fprintf(os.Stderr, "配置错误: %v\n", err)
+			os.Exit(1)
+		}
 		initLogger(ec.LogFile, ec.Quiet)
 		runLoop(ec)
 	case "once":
 		ec := resolveConfig()
+		if err := validateConfig(ec); err != nil {
+			fmt.Fprintf(os.Stderr, "配置错误: %v\n", err)
+			os.Exit(1)
+		}
 		initLogger(ec.LogFile, ec.Quiet)
 		if err := doSync(ec); err != nil {
 			fmt.Fprintf(os.Stderr, "同步失败: %v\n", err)
 			os.Exit(1)
 		}
 	case "server":
+		ec := resolveConfig()
+		if err := validateConfig(ec); err != nil {
+			fmt.Fprintf(os.Stderr, "配置错误: %v\n", err)
+			os.Exit(1)
+		}
+		initLogger(ec.LogFile, ec.Quiet)
 		if *serverNTPServe {
 			if err := startNTPServer(":" + *serverNTPPort); err != nil {
 				fmt.Fprintf(os.Stderr, "警告: NTP 服务器启动失败，仅启用 HTTP 时间服务器: %v\n", err)
@@ -191,20 +206,27 @@ func doSync(ec effectiveConfig) error {
 		for i, s := range sources {
 			chs[i] = make(chan res, 1)
 			go func(s timeSource, ch chan res) {
-				c, o, d, e := querySource(s, timeout)
+				c, o, d, e := querySource(s, timeout, ec.HTTPMethod)
 				ch <- res{s, c, o, d, e}
 			}(s, chs[i])
 		}
+		// 总时限：所有并发源共享一个截止时间，避免个别慢源把整体拖到 N*timeout。
+		deadline := time.After(timeout)
 		var best *res
-		for _, ch := range chs {
-			r := <-ch
-			if r.err != nil {
-				logf("源 %s 失败: %v", r.src.label, r.err)
-				continue
-			}
-			if best == nil || r.delay < best.delay {
-				b := r
-				best = &b
+		for i := 0; i < len(chs); i++ {
+			select {
+			case r := <-chs[i]:
+				if r.err != nil {
+					logf("源 %s 失败: %v", r.src.label, r.err)
+					continue
+				}
+				if best == nil || r.delay < best.delay {
+					b := r
+					best = &b
+				}
+			case <-deadline:
+				logf("best 策略达总时限 %v，停止等待其余源", timeout)
+				i = len(chs) // 跳出循环
 			}
 		}
 		if best == nil {
@@ -217,7 +239,7 @@ func doSync(ec effectiveConfig) error {
 	// fallback 策略：顺序尝试，首个成功者用于校准
 	var lastErr error
 	for _, s := range sources {
-		c, o, d, e := querySource(s, timeout)
+		c, o, d, e := querySource(s, timeout, ec.HTTPMethod)
 		if e != nil {
 			lastErr = e
 			logf("源 %s 失败: %v，尝试下一个", s.label, e)
@@ -230,14 +252,30 @@ func doSync(ec effectiveConfig) error {
 }
 
 // querySource 按源类型调用对应客户端。
-func querySource(s timeSource, timeout time.Duration) (time.Time, time.Duration, time.Duration, error) {
+func querySource(s timeSource, timeout time.Duration, httpMethod string) (time.Time, time.Duration, time.Duration, error) {
 	switch s.kind {
 	case "ntp":
 		return queryNTP(s.target, timeout)
 	case "http":
-		return queryHTTPTime(s.target, timeout, nil)
+		return queryHTTPTime(s.target, timeout, nil, httpMethod)
 	default:
 		return time.Time{}, 0, 0, fmt.Errorf("未知源类型: %s", s.kind)
+	}
+}
+
+// validateConfig 在启动时对配置做一次预校验，尽早暴露 chain/source 书写错误。
+func validateConfig(ec effectiveConfig) error {
+	if ec.Chain != "" {
+		if _, err := buildChain(ec); err != nil {
+			return err
+		}
+		return nil
+	}
+	switch ec.Source {
+	case "ntp", "http":
+		return nil
+	default:
+		return fmt.Errorf("未知时间源: %s（支持 ntp | http）", ec.Source)
 	}
 }
 
@@ -292,6 +330,7 @@ func printUsage() {
   -chain string        主备链：按顺序尝试，逗号分隔。每项 ntp:地址 或 http:地址
   -ntp-server string   NTP 服务器（默认 pool.ntp.org:123）
   -http-url string     HTTP 时间地址（默认 http://127.0.0.1:8080/time）
+  -http-method string  HTTP 时间源请求方法 get|post（默认 get）
   -interval int        同步间隔秒数（默认 3600）
   -timeout int         单次请求超时秒数（默认 5）
   -strategy string     多源策略: fallback(顺序试错) | best(并发择优取最小延时)（默认 fallback）

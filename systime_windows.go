@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"runtime"
 	"syscall"
 	"time"
 	"unsafe"
@@ -26,6 +27,8 @@ var procSetSystemTime = kernel32.NewProc("SetSystemTime")
 
 // setSystemTime 设置 Windows 系统时钟为给定的 UTC 时间。需要管理员权限。
 func setSystemTime(t time.Time) error {
+	timeSetMu.Lock()
+	defer timeSetMu.Unlock()
 	t = t.UTC()
 	st := systemTime{
 		wYear:         uint16(t.Year()),
@@ -37,6 +40,8 @@ func setSystemTime(t time.Time) error {
 		wMilliseconds: uint16(t.Nanosecond() / int(time.Millisecond)),
 	}
 	r, _, err := procSetSystemTime.Call(uintptr(unsafe.Pointer(&st)))
+	// KeepAlive 确保 st 在 syscall 返回前不被 GC 回收（防御性安全）。
+	runtime.KeepAlive(&st)
 	if r == 0 {
 		return fmt.Errorf("SetSystemTime 失败: %v (需要管理员权限)", err)
 	}

@@ -12,6 +12,9 @@ import (
 
 const taskName = "GoTimeSync"
 
+// oldTaskName 是更名前的旧计划任务名。升级用户机器上可能残留，install 时自动清理迁移。
+const oldTaskName = "WinTimeSync"
+
 // exePath 返回当前可执行文件的绝对路径。
 func exePath() (string, error) {
 	exe, err := os.Executable()
@@ -21,9 +24,24 @@ func exePath() (string, error) {
 	return filepath.Abs(exe)
 }
 
+// taskExists 检查指定计划任务是否存在。
+func taskExists(name string) bool {
+	cmd := exec.Command("schtasks", "/query", "/tn", name)
+	return cmd.Run() == nil
+}
+
 // installStartup 通过 schtasks 创建“系统启动时”以 SYSTEM 身份运行计划任务，实现开机启动。
-// 需要管理员权限执行本命令。
+// 需要管理员权限执行本命令。若检测到旧任务名 WinTimeSync，会自动删除以避免双任务。
 func installStartup() error {
+	// 迁移旧任务：更名前注册的计划任务名是 WinTimeSync，自动删除，避免与 GoTimeSync 重复开机同步。
+	if taskExists(oldTaskName) {
+		if err := exec.Command("schtasks", "/delete", "/tn", oldTaskName, "/f").Run(); err == nil {
+			fmt.Printf("已迁移旧计划任务 [%s]（更名前残留）\n", oldTaskName)
+		} else {
+			fmt.Printf("警告: 存在旧计划任务 [%s] 但删除失败: %v\n", oldTaskName, err)
+		}
+	}
+
 	exe, err := exePath()
 	if err != nil {
 		return err
@@ -58,19 +76,27 @@ func installStartup() error {
 	return nil
 }
 
-// uninstallStartup 移除开机启动计划任务。
+// uninstallStartup 移除开机启动计划任务（含旧任务名）。
 func uninstallStartup() error {
-	cmd := exec.Command("schtasks", "/delete", "/tn", taskName, "/f")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("删除计划任务失败: %v\n%s", err, string(out))
+	targets := []string{taskName}
+	if taskExists(oldTaskName) {
+		targets = append(targets, oldTaskName)
 	}
-	fmt.Printf("已移除开机启动计划任务 [%s]\n", taskName)
+	for _, name := range targets {
+		cmd := exec.Command("schtasks", "/delete", "/tn", name, "/f")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			if name == oldTaskName {
+				continue // 旧任务删除失败不阻塞
+			}
+			return fmt.Errorf("删除计划任务失败: %v\n%s", err, string(out))
+		}
+		fmt.Printf("已移除开机启动计划任务 [%s]\n", name)
+	}
 	return nil
 }
 
-// isInstalled 检查计划任务是否已存在。
+// isInstalled 检查计划任务是否已存在（新任务为准，兼容旧任务）。
 func isInstalled() bool {
-	cmd := exec.Command("schtasks", "/query", "/tn", taskName)
-	return cmd.Run() == nil
+	return taskExists(taskName) || taskExists(oldTaskName)
 }

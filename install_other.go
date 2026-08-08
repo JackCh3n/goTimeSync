@@ -1,19 +1,19 @@
-//go:build !windows
+//go:build !windows && !linux && !darwin
 
 package main
 
 import "fmt"
 
-// 非 Windows 平台不开机启动注册（schtasks 是 Windows 专属）。
-// Linux 可通过 systemd 单元实现类似效果，此处仅给出可读的占位实现，保证命令在各平台均可编译与运行。
+// 仅在 Windows/Linux/macOS 之外出现的其它平台（如 freebsd）提供占位实现，
+// 保证命令在各平台均可编译与运行。Linux 用 systemd，macOS 用 launchd，见对应文件。
 const taskName = "GoTimeSync"
 
 func installStartup() error {
-	return fmt.Errorf("开机启动注册仅支持 Windows 平台（Linux 可手动创建 systemd 单元）")
+	return fmt.Errorf("开机启动注册暂不支持当前平台（Windows: 计划任务；Linux: systemd；macOS: launchd）")
 }
 
 func uninstallStartup() error {
-	return fmt.Errorf("开机启动移除仅支持 Windows 平台")
+	return fmt.Errorf("开机启动移除暂不支持当前平台")
 }
 
 func isInstalled() bool {

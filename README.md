@@ -2,7 +2,7 @@
 
 > 🔗 GitHub 仓库：https://github.com/JackCh3n/goTimeSync
 
-轻量级 Windows 时间同步小工具（Go 编写，**零外部依赖**）。
+轻量级跨平台时间同步小工具（Go 编写，**零外部依赖**），支持 **Windows / Linux / macOS**。
 
 兼容 **NTP 协议** 与 **内网 HTTP 时间源** 两种方式，支持按秒级间隔定时同步系统时钟，并可注册为系统开机启动。
 
@@ -45,6 +45,7 @@ goTimeSync version                  查看版本
 | `-chain` | 主备链：按顺序尝试，逗号分隔，每项 `ntp:地址` 或 `http:地址` | 空（用 `-source`） |
 | `-ntp-server` | NTP 服务器地址（source=ntp 时生效） | `pool.ntp.org:123` |
 | `-http-url` | HTTP 时间服务器地址（source=http 时生效） | `http://127.0.0.1:8080/time` |
+| `-http-method` | HTTP 时间源请求方法：`get` \| `post`（内网服务若只暴露 POST 接口时用 post） | `get` |
 | `-interval` | 同步间隔（秒），run 模式生效 | `3600` |
 | `-timeout` | 单次请求超时（秒） | `5` |
 | `-check` | 仅检查时间偏差，不修改系统时间 | `false` |
@@ -186,8 +187,25 @@ The system cannot write to the specified device.
 - **手动运行**：直接 `Ctrl+C` 停止，再用新参数启动即可。
 - **已注册开机启动（`install`）**：计划任务命令在注册时即固定，需重新 `install`（带 `/f` 覆盖同名任务）或先 `uninstall` 再 `install`，才能永久变更 source / 地址 / 间隔。
 
+## 日志与状态文件
+
+- **日志落盘**：`-log <目录>` 启用后，日志按 `目录/年月/日.log` 组织，跨天自动切换到新文件。例如 `-log C:\logs` 时，2026-08-08 的日志写入 `C:\logs\202608\8.log`。不传 `-log` 则仅输出到控制台。
+- **状态文件**：`-status-file`（默认 `同目录/goTimeSync.status.json`）记录最近一次同步结果，并保留最近 **10 次**同步历史（`history` 数组，新记录在前），便于回溯与健康监控。
+
+## 开机启动（跨平台）
+
+- **Windows**：`install` 通过系统计划任务以 SYSTEM 身份在系统启动时运行（需管理员）。若检测到更名前残留的旧任务 `WinTimeSync`，会自动删除迁移到 `GoTimeSync`。
+- **Linux**：`install` 生成用户级 **systemd 单元**（`~/.config/systemd/user/gotimesync.service`），并打印启用命令（`systemctl --user enable --now gotimesync`）。root 级可复制到 `/etc/systemd/system/`。
+- **macOS**：`install` 生成用户级 **LaunchAgent**（`~/Library/LaunchAgents/com.gotimesync.plist`），并打印加载命令（`launchctl load -w`）。系统级可放 `/Library/LaunchDaemons/`。
+
 ## 注意事项
 
-- 修改系统时间与注册开机启动都需 **以管理员身份运行**。
+- 修改系统时间与注册开机启动都需 **以管理员（Windows/root）权限**运行。
 - 设置系统时间使用 UTC，工具内部已自动转换时区，无需手动处理。
-- 仅支持 Windows（设置系统时间依赖 `kernel32.SetSystemTime`）；非 Windows 平台编译时该能力以错误桩占位。
+- 跨平台支持：Windows（`kernel32.SetSystemTime`）/ Linux（`clock_settime`）/ macOS（`settimeofday`）；设置系统时间在各平台会加锁，避免 `run` 与 `server` 同时运行时的并发写竞态。
+- NTP 服务器仅应答 **mode=3 且长度恰为 48 字节**的合法客户端请求，响应与请求等长、不放大流量，从机制上避免反射放大攻击。
+
+## Roadmap（计划中）
+
+- **NTS（RFC 8915，NTP over TLS）**：面向公网单向时间同步的加密校验，内网工具暂列为后续方向。
+- 更多平台（FreeBSD 等）的开机启动支持。

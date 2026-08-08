@@ -19,8 +19,9 @@ type httpTimeResponse struct {
 
 // queryHTTPTime 请求内网 HTTP 时间服务器，测量往返耗时(RTT)，估算时间偏移并校准。
 // 通过 t0(发请求前) / t3(收响应后) 与服务器返回的时间，按 (serverTime + RTT/2) 估算服务端当前时间。
+// method 指定请求方法（"" 或 "get" 用 GET，"post" 用 POST），兼容只暴露 POST 接口的内网服务。
 // 显式校验：仅接受 2xx 状态码；不跟随重定向（遇到 3xx 直接判失败，交由主备链尝试下一个源）。
-func queryHTTPTime(url string, timeout time.Duration, client *http.Client) (corrected time.Time, offset, delay time.Duration, err error) {
+func queryHTTPTime(url string, timeout time.Duration, client *http.Client, method string) (corrected time.Time, offset, delay time.Duration, err error) {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
@@ -34,8 +35,17 @@ func queryHTTPTime(url string, timeout time.Duration, client *http.Client) (corr
 		}
 	}
 
+	verb := "GET"
+	if strings.EqualFold(method, "POST") {
+		verb = "POST"
+	}
 	t0 := time.Now()
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(verb, url, nil)
+	if err != nil {
+		return time.Time{}, 0, 0, fmt.Errorf("构造请求失败: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
 	if err != nil {
 		return time.Time{}, 0, 0, fmt.Errorf("请求失败: %w", err)
 	}
