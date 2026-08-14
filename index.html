@@ -203,15 +203,14 @@
     <div class="dl-card">
       <div class="dl-icon">🕰️</div>
       <div class="dl-info">
-        <h3>goTimeSync.exe <span class="ver">v1.13</span></h3>
+        <h3>goTimeSync.exe <span class="ver">v1.17</span></h3>
         <div class="dl-meta">Windows · amd64 · 约 8.06 MB · 零外部依赖</div>
         <div style="display:flex;gap:12px;flex-wrap:wrap;">
           <a class="btn btn-down" href="goTimeSync.exe" download>⬇ 下载 exe</a>
           <a class="btn btn-ghost" href="config.bat" download>⬇ 下载 config.bat</a>
         </div>
         <div class="hash-box" style="margin-top:16px;">
-          <div class="row"><span class="lab">SHA256</span><code>1c2ed0e89932437311f010925a49ec0b8d055a9724bd0fb641d2b0cb3a92ae51</code></div>
-          <div class="row"><span class="lab">MD5</span><code>6cafadf3978dc0f7977fbd92b5b2e325</code></div>
+          <div class="row"><span class="lab">校验</span><code>哈希随构建变化，下载后可执行 <b>certutil -hashfile goTimeSync.exe SHA256</b> 自行计算核对</code></div>
         </div>
         <details style="margin-top:16px;">
           <summary style="cursor:pointer;color:var(--brand);font-weight:600;">查看 config.bat 内容（中文配置向导）</summary>
@@ -262,27 +261,34 @@ set /p SRCMODE=请输入数字 [1-4]：
 
 set "ARGS="
 
-if "%SRCMODE%"=="1" (
+if "!SRCMODE!"=="1" (
     set /p NTP=请输入 NTP 服务器[默认 pool.ntp.org:123]：
     if "!NTP!"=="" set "NTP=pool.ntp.org:123"
+    echo(!NTP!| findstr /c:":" &gt;nul || set "NTP=!NTP!:123"
     set "ARGS=-source ntp -ntp-server !NTP!"
-) else if "%SRCMODE%"=="2" (
+) else if "!SRCMODE!"=="2" (
     set /p URL=请输入 HTTP 时间地址[默认 http://127.0.0.1:8080/time]：
     if "!URL!"=="" set "URL=http://127.0.0.1:8080/time"
+    echo(!URL!| findstr /b /i "http:// https://" &gt;nul || set "URL=http://!URL!"
     set "ARGS=-source http -http-url !URL!"
-) else if "%SRCMODE%"=="3" (
+) else if "!SRCMODE!"=="3" (
     set /p NTP=请输入主用 NTP 服务器[默认 pool.ntp.org:123]：
     if "!NTP!"=="" set "NTP=pool.ntp.org:123"
+    echo(!NTP!| findstr /c:":" &gt;nul || set "NTP=!NTP!:123"
     set /p URL=请输入备用 HTTP 地址[默认 http://127.0.0.1:8080/time]：
     if "!URL!"=="" set "URL=http://127.0.0.1:8080/time"
+    echo(!URL!| findstr /b /i "http:// https://" &gt;nul || set "URL=http://!URL!"
     set "ARGS=-chain ntp:!NTP!,http:!URL!"
-) else if "%SRCMODE%"=="4" (
+) else if "!SRCMODE!"=="4" (
     set /p N1=主用 NTP[默认 time1.aliyun.com:123]：
     if "!N1!"=="" set "N1=time1.aliyun.com:123"
+    echo(!N1!| findstr /c:":" &gt;nul || set "N1=!N1!:123"
     set /p N2=备用 NTP 1[默认 time2.aliyun.com:123]：
     if "!N2!"=="" set "N2=time2.aliyun.com:123"
+    echo(!N2!| findstr /c:":" &gt;nul || set "N2=!N2!:123"
     set /p N3=备用 NTP 2[默认 time.windows.com:123]：
     if "!N3!"=="" set "N3=time.windows.com:123"
+    echo(!N3!| findstr /c:":" &gt;nul || set "N3=!N3!:123"
     set "ARGS=-chain ntp:!N1!,ntp:!N2!,ntp:!N3!"
 ) else (
     echo 无效选择，使用默认单一 NTP。
@@ -292,6 +298,7 @@ if "%SRCMODE%"=="1" (
 echo.
 set /p INTERVAL=请输入同步间隔秒数[默认 3600]：
 if "!INTERVAL!"=="" set "INTERVAL=3600"
+echo(!INTERVAL!| findstr /r "^[0-9][0-9]*$" &gt;nul || (echo 间隔须为纯数字，已回退默认 3600 &amp; set "INTERVAL=3600")
 set "ARGS=!ARGS! -interval !INTERVAL!"
 
 echo.
@@ -299,15 +306,15 @@ echo ------------------- 配置预览 -------------------
 echo   goTimeSync.exe !ARGS!
 echo -------------------------------------------------
 
-if "%RUNMODE%"=="1" (
+if "!RUNMODE!"=="1" (
     echo.
     echo 正在执行【一次测试（仅检查偏差）】...
     goTimeSync.exe once !ARGS! -check
-) else if "%RUNMODE%"=="2" (
+) else if "!RUNMODE!"=="2" (
     echo.
     echo 开始【持续同步】（按 Ctrl+C 停止）...
     goTimeSync.exe run !ARGS!
-) else if "%RUNMODE%"=="3" (
+) else if "!RUNMODE!"=="3" (
     echo.
     echo 正在【注册开机启动】...
     goTimeSync.exe install !ARGS!
@@ -532,10 +539,10 @@ goTimeSync.exe <span class="k">uninstall</span>
     <span>本软件页面由</span>
     <span class="nm">Hy3</span>
     <span>亲手打造 ·</span>
-    <b>goTimeSync v1.13</b>
+    <b>goTimeSync v1.17</b>
   </div>
   <p class="disclaimer">
-    本工具仅用于内网时间校准与运维辅助。设置系统时间与注册开机任务需管理员权限；NTP 服务端默认占用 UDP 123 特权端口，若被系统 w32time 占用请改用其它端口或先停止该服务。下载文件请核对上方 SHA256 哈希以确保完整。
+    本工具仅用于内网时间校准与运维辅助。设置系统时间与注册开机任务需管理员权限；NTP 服务端默认占用 UDP 123 特权端口，若被系统 w32time 占用请改用其它端口或先停止该服务。下载文件后可用 certutil 自行计算 SHA256 哈希核对完整性。
   </p>
 </footer>
 

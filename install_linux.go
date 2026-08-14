@@ -50,7 +50,7 @@ func installStartup() error {
 		}
 		quoted = append(quoted, a)
 	}
-	exec := fmt.Sprintf("%s run %s", exe, strings.Join(quoted, " "))
+	execLine := fmt.Sprintf("%s run %s", exe, strings.Join(quoted, " "))
 
 	if err := os.MkdirAll(systemdUnitDir, 0755); err != nil {
 		return fmt.Errorf("创建 systemd 用户目录失败: %w", err)
@@ -62,7 +62,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=` + exec + `
+ExecStart=` + execLine + `
 Restart=always
 RestartSec=60
 

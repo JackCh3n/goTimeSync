@@ -22,7 +22,7 @@ var (
 	interval       = flag.Int("interval", 3600, "同步间隔（秒），run 模式生效")
 	check          = flag.Bool("check", false, "仅检查时间偏差，不修改系统时间")
 	timeoutSec     = flag.Int("timeout", 5, "单次请求超时（秒）")
-	logFile        = flag.String("log", "", "日志文件路径；启用后日志追加写入该文件（quiet 时不输出控制台）")
+	logFile        = flag.String("log", "", "日志根目录；日志按 该目录/年月/日.log 逐日写入（quiet 时不输出控制台）")
 	statusFile     = flag.String("status-file", "", "同步状态文件路径（默认: 同目录/goTimeSync.status.json）")
 	minOffset      = flag.Int64("min-offset", 0, "偏移阈值(ms)：绝对值小于该值则跳过设置（0=不限制）")
 	maxOffset      = flag.Int64("max-offset", 0, "大跳保护(ms)：绝对值大于该值视为异常源，拒绝设置并尝试下一个（0=不限制）")
@@ -152,7 +152,7 @@ func main() {
 		}
 	case "status":
 		if isInstalled() {
-			fmt.Println("已注册开机启动（计划任务 " + taskName + "）")
+			fmt.Println("已注册开机启动（" + taskName + "）")
 		} else {
 			fmt.Println("未注册开机启动")
 		}
@@ -171,10 +171,18 @@ func runLoop(first effectiveConfig) {
 	if err := doSync(ec); err != nil {
 		fmt.Fprintf(os.Stderr, "初始同步失败: %v\n", err)
 	}
-	ticker := time.NewTicker(time.Duration(ec.Interval) * time.Second)
+	interval := time.Duration(ec.Interval) * time.Second
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
 		ec = resolveConfig() // 每次循环重读配置，改文件即生效
+		// 热更新：间隔变化时重置 ticker；日志配置变化时重设日志输出（幂等，未变化则无操作）
+		if d := time.Duration(ec.Interval) * time.Second; d != interval {
+			interval = d
+			ticker.Reset(interval)
+			logf("同步间隔已热更新为 %d 秒", ec.Interval)
+		}
+		initLogger(ec.LogFile, ec.Quiet)
 		if err := doSync(ec); err != nil {
 			fmt.Fprintf(os.Stderr, "[%s] 同步失败: %v\n",
 				time.Now().Format("2006-01-02 15:04:05"), err)
@@ -213,20 +221,27 @@ func doSync(ec effectiveConfig) error {
 		// 总时限：所有并发源共享一个截止时间，避免个别慢源把整体拖到 N*timeout。
 		deadline := time.After(timeout)
 		var best *res
+	loop:
 		for i := 0; i < len(chs); i++ {
+			var r res
+			// 先非阻塞取已就绪的结果，避免与 deadline 分支随机竞争而丢弃已成功返回的源。
 			select {
-			case r := <-chs[i]:
-				if r.err != nil {
-					logf("源 %s 失败: %v", r.src.label, r.err)
-					continue
+			case r = <-chs[i]:
+			default:
+				select {
+				case r = <-chs[i]:
+				case <-deadline:
+					logf("best 策略达总时限 %v，停止等待其余源", timeout)
+					break loop
 				}
-				if best == nil || r.delay < best.delay {
-					b := r
-					best = &b
-				}
-			case <-deadline:
-				logf("best 策略达总时限 %v，停止等待其余源", timeout)
-				i = len(chs) // 跳出循环
+			}
+			if r.err != nil {
+				logf("源 %s 失败: %v", r.src.label, r.err)
+				continue
+			}
+			if best == nil || r.delay < best.delay {
+				b := r
+				best = &b
 			}
 		}
 		if best == nil {
@@ -319,7 +334,7 @@ func printUsage() {
   goTimeSync run                      持续运行，按 -interval 周期同步（默认 3600 秒）
   goTimeSync once                     立即同步一次后退出
   goTimeSync server                   启动 HTTP 时间服务器，对内网提供时间源
-  goTimeSync install                  注册为系统开机启动（计划任务，需管理员）
+  goTimeSync install                  注册为系统开机启动（Windows: 计划任务 / Linux: systemd / macOS: launchd）
   goTimeSync uninstall                移除开机启动
   goTimeSync status                   查看是否已注册开机启动
   goTimeSync version                  查看版本
@@ -337,8 +352,8 @@ func printUsage() {
   -min-offset int      偏移阈值(ms)：绝对值小于该值则跳过设置（默认 0=不限制）
   -max-offset int      大跳保护(ms)：绝对值大于该值视为异常源，拒绝设置并尝试下一个（默认 0=不限制）
   -check               仅检查偏差，不修改系统时间
-  -log string          日志文件路径；启用后日志追加写入该文件
-  -status-file string  同步状态文件路径（默认 同目录/goTimeSync.status.json）
+  -log string          日志根目录；按 该目录/年月/日.log 逐日落盘（如 logs\202608\8.log）
+  -status-file string  同步状态文件路径（默认 同目录/goTimeSync.status.json，含最近10次历史）
   -quiet               安静模式，仅输出错误（日志文件仍记录）
 
 server 模式参数:

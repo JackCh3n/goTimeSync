@@ -45,27 +45,34 @@ set /p SRCMODE=请输入数字 [1-4]：
 
 set "ARGS="
 
-if "%SRCMODE%"=="1" (
+if "!SRCMODE!"=="1" (
     set /p NTP=请输入 NTP 服务器[默认 pool.ntp.org:123]：
     if "!NTP!"=="" set "NTP=pool.ntp.org:123"
+    echo(!NTP!| findstr /c:":" >nul || set "NTP=!NTP!:123"
     set "ARGS=-source ntp -ntp-server !NTP!"
-) else if "%SRCMODE%"=="2" (
+) else if "!SRCMODE!"=="2" (
     set /p URL=请输入 HTTP 时间地址[默认 http://127.0.0.1:8080/time]：
     if "!URL!"=="" set "URL=http://127.0.0.1:8080/time"
+    echo(!URL!| findstr /b /i "http:// https://" >nul || set "URL=http://!URL!"
     set "ARGS=-source http -http-url !URL!"
-) else if "%SRCMODE%"=="3" (
+) else if "!SRCMODE!"=="3" (
     set /p NTP=请输入主用 NTP 服务器[默认 pool.ntp.org:123]：
     if "!NTP!"=="" set "NTP=pool.ntp.org:123"
+    echo(!NTP!| findstr /c:":" >nul || set "NTP=!NTP!:123"
     set /p URL=请输入备用 HTTP 地址[默认 http://127.0.0.1:8080/time]：
     if "!URL!"=="" set "URL=http://127.0.0.1:8080/time"
+    echo(!URL!| findstr /b /i "http:// https://" >nul || set "URL=http://!URL!"
     set "ARGS=-chain ntp:!NTP!,http:!URL!"
-) else if "%SRCMODE%"=="4" (
+) else if "!SRCMODE!"=="4" (
     set /p N1=主用 NTP[默认 time1.aliyun.com:123]：
     if "!N1!"=="" set "N1=time1.aliyun.com:123"
+    echo(!N1!| findstr /c:":" >nul || set "N1=!N1!:123"
     set /p N2=备用 NTP 1[默认 time2.aliyun.com:123]：
     if "!N2!"=="" set "N2=time2.aliyun.com:123"
+    echo(!N2!| findstr /c:":" >nul || set "N2=!N2!:123"
     set /p N3=备用 NTP 2[默认 time.windows.com:123]：
     if "!N3!"=="" set "N3=time.windows.com:123"
+    echo(!N3!| findstr /c:":" >nul || set "N3=!N3!:123"
     set "ARGS=-chain ntp:!N1!,ntp:!N2!,ntp:!N3!"
 ) else (
     echo 无效选择，使用默认单一 NTP。
@@ -75,6 +82,7 @@ if "%SRCMODE%"=="1" (
 echo.
 set /p INTERVAL=请输入同步间隔秒数[默认 3600]：
 if "!INTERVAL!"=="" set "INTERVAL=3600"
+echo(!INTERVAL!| findstr /r "^[0-9][0-9]*$" >nul || (echo 间隔须为纯数字，已回退默认 3600 & set "INTERVAL=3600")
 set "ARGS=!ARGS! -interval !INTERVAL!"
 
 echo.
@@ -82,15 +90,15 @@ echo ------------------- 配置预览 -------------------
 echo   goTimeSync.exe !ARGS!
 echo -------------------------------------------------
 
-if "%RUNMODE%"=="1" (
+if "!RUNMODE!"=="1" (
     echo.
     echo 正在执行【一次测试（仅检查偏差）】...
     goTimeSync.exe once !ARGS! -check
-) else if "%RUNMODE%"=="2" (
+) else if "!RUNMODE!"=="2" (
     echo.
     echo 开始【持续同步】（按 Ctrl+C 停止）...
     goTimeSync.exe run !ARGS!
-) else if "%RUNMODE%"=="3" (
+) else if "!RUNMODE!"=="3" (
     echo.
     echo 正在【注册开机启动】...
     goTimeSync.exe install !ARGS!

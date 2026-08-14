@@ -55,6 +55,10 @@ var cliSetFlags = map[string]bool{}
 var (
 	logOut io.Writer = os.Stdout
 	logMu  sync.Mutex
+	// 日志热重设状态：记录当前生效配置，initLogger 据此做幂等切换（run 模式每轮重读配置后调用）。
+	logCurRoot  string          // 当前日志根目录（空=不落盘）
+	logCurQuiet bool            // 当前是否静音
+	logCurFile  *dailyLogWriter // 当前打开的日志 writer（未落盘时为 nil）
 )
 
 // timeSetMu 保护对系统时钟的写入。run 模式与 server 模式的后台 NTP 自校准可能并发
@@ -133,24 +137,49 @@ func (w *dailyLogWriter) Write(p []byte) (int, error) {
 	return w.file.Write(p)
 }
 
-// initLogger 配置日志输出。logRoot 非空时按「根目录/年月/日.log」逐日落盘；
-// 为空则不写文件。quiet 模式不输出到控制台（但仍写文件）。
+// Close 关闭当前打开的日志文件（供日志配置热切换时释放句柄）。
+func (w *dailyLogWriter) Close() error {
+	if w.file == nil {
+		return nil
+	}
+	err := w.file.Close()
+	w.file = nil
+	return err
+}
+
+// initLogger 配置日志输出（幂等，可在 run 循环中反复调用）：
+// 配置未变化时无操作；变化时切换输出并关闭旧 writer，避免句柄泄漏（Windows 下占用文件）。
+// logRoot 非空时按「根目录/年月/日.log」逐日落盘；为空则不写文件。
+// quiet 模式不输出到控制台（但仍写文件）。
 func initLogger(logRoot string, quiet bool) {
-	if logRoot == "" {
-		logOut = os.Stdout
-		return
+	logMu.Lock()
+	defer logMu.Unlock()
+	if logRoot == logCurRoot && quiet == logCurQuiet {
+		return // 配置未变化
 	}
-	w := &dailyLogWriter{dir: logRoot}
-	if err := w.open(); err != nil {
-		fmt.Fprintf(os.Stderr, "警告: 无法创建日志目录 %s: %v（仅输出到控制台）\n", logRoot, err)
-		logOut = os.Stdout
-		return
+	var w io.Writer = os.Stdout
+	var dw *dailyLogWriter
+	if logRoot != "" {
+		d := &dailyLogWriter{dir: logRoot}
+		if err := d.open(); err != nil {
+			fmt.Fprintf(os.Stderr, "警告: 无法创建日志目录 %s: %v（仅输出到控制台）\n", logRoot, err)
+			logRoot = "" // 落盘失败降级为仅控制台
+			d = nil
+		} else {
+			dw = d
+			w = d
+			if !quiet {
+				w = io.MultiWriter(d, os.Stdout)
+			}
+		}
 	}
-	if quiet {
-		logOut = w
-	} else {
-		logOut = io.MultiWriter(w, os.Stdout)
+	if logCurFile != nil {
+		_ = logCurFile.Close()
 	}
+	logOut = w
+	logCurRoot = logRoot
+	logCurQuiet = quiet
+	logCurFile = dw
 }
 
 // logf 记录一条带时间戳的信息到日志目标。quiet 是否静音由 initLogger 决定（不静音则同时写控制台）。
@@ -330,9 +359,6 @@ func writeStatus(path string, st syncStatus) {
 		DelayMs:  st.DelayMs,
 		OK:       st.OK,
 		Action:   st.Action,
-	}
-	if st.Error != "" {
-		rec.Action = st.Error
 	}
 	hist := append([]syncRecord{rec}, cur.History...)
 	if len(hist) > maxHistory {
