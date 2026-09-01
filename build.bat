@@ -1,17 +1,17 @@
-ï»¿@echo off
-chcp 65001 >nul
+@echo off
+chcp 936 >nul 2>nul
 cd /d "%~dp0"
 
-:: ç‰ˆæœ¬å· = 1.00 + 0.01 * git æäº¤æ¬¡æ•°ï¼ˆæ¯æäº¤ä¸€æ¬¡é€’å¢ 0.01ï¼‰
+:: °æ±¾ºÅ = 1.00 + 0.01 * git Ìá½»´ÎÊı£¨Ã¿Ìá½»Ò»´ÎµİÔö 0.01£©
 for /f %%c in ('git rev-list --count HEAD 2^>nul') do set COUNT=%%c
 if not defined COUNT set COUNT=0
 for /f %%v in ('powershell -NoProfile -Command "[math]::Round(1.0 + 0.01 * %COUNT%, 2)"') do set VER=%%v
 
-echo æ„å»º goTimeSync v%VER%  (åŸºäº %COUNT% æ¬¡æäº¤)
+echo ¹¹½¨ goTimeSync v%VER%  (»ùÓÚ %COUNT% ´ÎÌá½»)
 go build -ldflags "-X main.Version=%VER%" -o goTimeSync.exe .
 if errorlevel 1 (
-    echo [é”™è¯¯] ç¼–è¯‘å¤±è´¥ï¼Œè¯·ç¡®è®¤å·²å®‰è£… Go ä¸” go åœ¨ PATH ä¸­ã€‚
+    echo [´íÎó] ±àÒëÊ§°Ü£¬ÇëÈ·ÈÏÒÑ°²×° Go ÇÒ go ÔÚ PATH ÖĞ¡£
     pause
     exit /b 1
 )
-echo å®Œæˆ: goTimeSync.exe  (v%VER%)
+echo Íê³É: goTimeSync.exe  (v%VER%)

@@ -15,7 +15,7 @@ var Version = "dev"
 var (
 	configFile     = flag.String("config", "", "配置文件路径（默认: 可执行文件同目录/goTimeSync.json）。run 模式每次循环重读")
 	source         = flag.String("source", "ntp", "单源模式时间源: ntp | http（未指定 -chain 时生效）")
-	chain          = flag.String("chain", "", "主备链：按顺序尝试，用逗号分隔。每项 ntp:地址 或 http:地址。例: ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time")
+	chain          = flag.String("chain", "", "主备链：按顺序尝试，用逗号分隔。每项如 ntp:pool.ntp.org:123 或 http://127.0.0.1:8080/time")
 	ntpServer      = flag.String("ntp-server", "pool.ntp.org:123", "NTP 服务器地址 (source=ntp 时生效)")
 	httpURL        = flag.String("http-url", "http://127.0.0.1:8080/time", "HTTP 时间服务器地址 (source=http 时生效)")
 	httpMethod     = flag.String("http-method", "", "HTTP 时间源请求方法 (get|post，默认 get)")
@@ -52,16 +52,27 @@ func buildChain(ec effectiveConfig) ([]timeSource, error) {
 			}
 			i := strings.Index(part, ":")
 			if i <= 0 {
-				return nil, fmt.Errorf("无法解析源: %q（格式应为 ntp:地址 或 http:地址）", part)
+				return nil, fmt.Errorf("无法解析源: %q（格式应为 ntp:地址、http://地址 或 https://地址）", part)
 			}
-			kind, target := part[:i], part[i+1:]
+			kind, rest := part[:i], part[i+1:]
 			switch kind {
 			case "ntp":
+				// ntp:pool.ntp.org:123 与 ntp://pool.ntp.org:123 等价
+				target := strings.TrimPrefix(rest, "//")
 				out = append(out, timeSource{kind: "ntp", target: target, label: "ntp:" + target})
-			case "http":
+			case "http", "https":
+				// 首个冒号会把 http://x 切成 rest="//x"，需还原完整 URL；
+				// 旧写法 http:http://x 的 rest 本身含 ://，原样保留
+				target := rest
+				switch {
+				case strings.HasPrefix(rest, "//"):
+					target = kind + ":" + rest
+				case !strings.Contains(rest, "://"):
+					target = "http://" + rest
+				}
 				out = append(out, timeSource{kind: "http", target: target, label: "http:" + target})
 			default:
-				return nil, fmt.Errorf("未知源类型: %q（支持 ntp: / http:）", kind)
+				return nil, fmt.Errorf("未知源类型: %q（支持 ntp: / http:// / https://）", kind)
 			}
 		}
 		if len(out) == 0 {
@@ -342,7 +353,7 @@ func printUsage() {
 通用参数:
   -config string       配置文件路径（默认 同目录/goTimeSync.json），run 模式每次循环重读
   -source string       单源模式时间源: ntp | http（未指定 -chain 时生效，默认 ntp）
-  -chain string        主备链：按顺序尝试，逗号分隔。每项 ntp:地址 或 http:地址
+  -chain string        主备链：按顺序尝试，逗号分隔。每项如 ntp:pool.ntp.org:123 或 http://127.0.0.1:8080/time
   -ntp-server string   NTP 服务器（默认 pool.ntp.org:123）
   -http-url string     HTTP 时间地址（默认 http://127.0.0.1:8080/time）
   -http-method string  HTTP 时间源请求方法 get|post（默认 get）

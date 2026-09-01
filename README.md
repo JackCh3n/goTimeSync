@@ -80,13 +80,13 @@ goTimeSync.exe uninstall
 
 ```bash
 # 主用 NTP，备用 HTTP
-goTimeSync.exe run -chain "ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time" -interval 60
+goTimeSync.exe run -chain "ntp:pool.ntp.org:123,http://127.0.0.1:8080/time" -interval 60
 
 # 主用 NTP A，备用 NTP B，备用 NTP C
 goTimeSync.exe run -chain "ntp:time1.aliyun.com:123,ntp:time2.aliyun.com:123,ntp:time.windows.com:123" -interval 300
 
 # 开机启动也支持主备链（安装时的参数会原样带入开机任务）
-goTimeSync.exe install -chain "ntp:pool.ntp.org:123,http:http://127.0.0.1:8080/time" -interval 60
+goTimeSync.exe install -chain "ntp:pool.ntp.org:123,http://127.0.0.1:8080/time" -interval 60
 ```
 
 > 未指定 `-chain` 时回退到旧的 `-source` 单源模式，保持向后兼容。
@@ -150,7 +150,7 @@ goTimeSync.exe server -server-addr :8080 -server-ntp-port 123
 goTimeSync.exe run -source ntp -ntp-server <A的IP>:123 -interval 60
 
 # 或 B 机主备：主用 A 的 NTP，备用 A 的 HTTP
-goTimeSync.exe run -chain "ntp:<A的IP>:123,http:http://<A的IP>:8080/time" -interval 60
+goTimeSync.exe run -chain "ntp:<A的IP>:123,http://<A的IP>:8080/time" -interval 60
 ```
 
 > 端口说明：UDP 123 是系统特权端口，启动 NTP 服务端**必须管理员**。若该端口已被 Windows 自带 `w32time` 占用，先停止它（`net stop w32time`）或改用其它端口（如 `-server-ntp-port 12345`，B 机相应用 `<A的IP>:12345`）。
@@ -165,20 +165,22 @@ rem 典型流程：运行方式选 3（开机启动） + 时间源模式选 3（
 
 #### 文件编码要求（重要）
 
-`config.bat` 必须保存为 **UTF-8 with BOM** 编码。脚本首行 `@chcp 65001 >nul` 仅切换**控制台输出**代码页为 UTF-8，**不影响** cmd.exe 读取 .bat 文件的方式。若文件为 UTF-8 无 BOM，cmd.exe 会按系统 ANSI 代码页（中文 Windows 为 CP936/GBK）解析脚本中的中文，导致字节错位、控制台无法写入，出现以下错误：
+`build.bat` 与 `config.bat` 必须保存为 **GBK（CP936/ANSI）编码、CRLF 换行、无 BOM**。cmd.exe 按系统 ANSI 代码页（中文 Windows 为 CP936/GBK）解析批处理文件：若保存为 UTF-8（无论有无 BOM），中文会被按 GBK 错误切分成乱码“命令”，文件头 BOM 还会把首行 `@echo off` 的 `@` 一并吞掉，出现 `'锘緻echo' 不是内部或外部命令`，整段脚本失效。
 
-```
-============================================================
-The system cannot write to the specified device.
-The system cannot write to the specified device.
-============================================================
+脚本开头两行保持纯 ASCII，保证在任意初始代码页下都能正确解析：
+
+```bat
+@echo off
+chcp 936 >nul 2>nul
 ```
 
-> Windows 10+ 的 cmd.exe 识别 UTF-8 BOM 后会按 UTF-8 读取脚本内容，配合 `chcp 65001` 即可正确显示中文。**请勿用记事本“另存为 ANSI”**，否则在非中文系统或代码页不是 936 的机器上仍会乱码。
+第二行把控制台代码页归一到 936，与文件的 GBK 编码保持一致：在中文 Windows 上是无操作；在代码页异常的控制台（含管理员窗口、被改成 65001 的会话）中可自愈。**不要**改回 `chcp 65001` + UTF-8 方案——UTF-8 代码页在管理员窗口等场景会触发 `The system cannot write to the specified device.`。
+
+> 编辑这两个文件时：VS Code 请点右下角编码 → 「通过编码保存」选 **GBK**（GB 2312）；记事本「另存为」编码选 **ANSI**。若编辑器按默认 UTF-8 重新保存，脚本会再次乱码。
 
 #### 以管理员身份运行
 
-设置系统时间、注册开机启动（计划任务）都需要管理员权限。推荐**右键 `config.bat` → 以管理员身份运行**。脚本内已自带管理员检测：若未提权，会提示「当前不是管理员身份」并建议重开。提权后 cmd.exe 的控制台编码行为与非提权一致，UTF-8 BOM 方案在两种模式下均可正常显示中文。
+设置系统时间、注册开机启动（计划任务）都需要管理员权限。推荐**右键 `config.bat` → 以管理员身份运行**。脚本内已自带管理员检测：若未提权，会提示「当前不是管理员身份」并建议重开。提权后 cmd.exe 的控制台编码行为与非提权一致，`chcp 936` 归一方案在两种模式下均可正常显示中文。
 
 ## 修改运行参数
 
