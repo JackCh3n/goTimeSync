@@ -1,0 +1,255 @@
+# ============================================================
+# goTimeSync — CNB.cool 云原生构建流水线
+# 与 .github/workflows/release.yml（GitHub Actions）行为对齐：
+#   - 推送到 master：vet+test → 构建 5 个平台二进制 → 生成校验和
+#     → 版本号取 1.00 + 0.01 * 提交数（与 build.bat / release.yml 一致）
+#     → 创建 Release → 上传二进制与校验和附件
+#   - 推送 tag（如 git tag v1.19）：正式发版，版本号取 Tag 名
+#   - PR：跑 go vet + go test 做质量门禁
+#   - 手动触发（web_trigger）：与 master push 相同流程
+# 注意：不使用 YAML anchor（&xxx / <<: *xxx），CNB 解析器对其支持不可靠，
+#       全部显式展开。平台矩阵少（5 个），直接内联脚本，不依赖 scripts/ 目录。
+# ============================================================
+
+# --- master 分支 push：自动构建 + 提交数版本 Release ---
+master:
+  push:
+    - name: build-and-release
+      runner:
+        cpus: 8
+      docker:
+        image: golang:1.22
+      ifModify:
+        - "*.go"
+        - "go.mod"
+        - "go.sum"
+        - ".cnb.yml"
+      stages:
+        # 版本号 = 1.00 + 0.01 * 提交数（与 build.bat / release.yml 同一公式）
+        - name: set-version
+          script: |
+            git fetch --unshallow --quiet 2>/dev/null || true
+            COUNT=$(git rev-list --count HEAD 2>/dev/null || echo 0)
+            VERSION=$(awk "BEGIN{printf \"%.2f\", 1.0 + 0.01 * $COUNT}")
+            echo "==> 构建版本: v$VERSION (commits=$COUNT)"
+            echo "##[set-output VERSION=$VERSION]"
+          exports:
+            VERSION: RELEASE_VERSION
+
+        # 测试 + 静态检查
+        - name: test
+          script: |
+            set -e
+            go vet ./...
+            go test ./...
+
+        # 5 平台交叉编译（与 release.yml 矩阵一致，CGO 关闭避免交叉编译失败）
+        - name: build-binaries
+          script: |
+            set -e
+            mkdir -p dist
+            b() {
+              GOOS=$1 GOARCH=$2 CGO_ENABLED=0 \
+                go build -ldflags "-s -w -X main.Version=$RELEASE_VERSION" \
+                -o "dist/goTimeSync-$1-$2$3" .
+            }
+            b windows amd64 .exe
+            b linux amd64 ""
+            b linux arm64 ""
+            b darwin amd64 ""
+            b darwin arm64 ""
+            ls -lh dist/
+
+        # 生成 SHA256 校验和（与 release.yml 一致）
+        - name: checksums
+          script: |
+            set -e
+            cd dist
+            sha256sum * > "goTimeSync-$RELEASE_VERSION-sha256.txt"
+            cat "goTimeSync-$RELEASE_VERSION-sha256.txt"
+
+        # 创建 Release
+        - name: create-release
+          type: git:release
+          options:
+            tag: v$RELEASE_VERSION
+            title: goTimeSync v$RELEASE_VERSION
+            description: |
+              goTimeSync v$RELEASE_VERSION
+              - NTP / 内网 HTTP 双协议时间源
+              - 主备链(-chain) 与多上游择优(-strategy best)
+              - 偏移阈值(-min-offset) 与大跳保护(-max-offset)
+              - 配置文件(goTimeSync.json) 驱动、日志落盘(-log)、状态文件(-status-file)
+              - server 模式可同时充当 NTP+HTTP 时间源
+              - 跨平台：Windows / Linux(amd64,arm64) / macOS(amd64,arm64)
+            latest: true
+
+        # 上传 5 个平台二进制与校验和为 Release 附件
+        - name: upload-attachments
+          image: cnbcool/attachments:latest
+          settings:
+            tag: v$RELEASE_VERSION
+            attachments:
+              - "./dist/*"
+
+      endStages:
+        - name: summary
+          script: |
+            echo "Build $CNB_BUILD_ID finished"
+            echo "Release version: ${RELEASE_VERSION:-<none>}"
+            ls -lh dist/ || true
+
+# --- Tag 推送：正式发版（版本号取 Tag 名，兼容带/不带 v 前缀） ---
+"$":
+  tag_push:
+    - name: release-build
+      runner:
+        cpus: 8
+      docker:
+        image: golang:1.22
+      stages:
+        - name: set-version
+          script: |
+            VERSION="${CNB_BRANCH#v}"
+            echo "==> 发版版本: v$VERSION"
+            echo "##[set-output VERSION=$VERSION]"
+          exports:
+            VERSION: RELEASE_VERSION
+
+        - name: test
+          script: |
+            set -e
+            go vet ./...
+            go test ./...
+
+        - name: build-binaries
+          script: |
+            set -e
+            mkdir -p dist
+            b() {
+              GOOS=$1 GOARCH=$2 CGO_ENABLED=0 \
+                go build -ldflags "-s -w -X main.Version=$RELEASE_VERSION" \
+                -o "dist/goTimeSync-$1-$2$3" .
+            }
+            b windows amd64 .exe
+            b linux amd64 ""
+            b linux arm64 ""
+            b darwin amd64 ""
+            b darwin arm64 ""
+            ls -lh dist/
+
+        - name: checksums
+          script: |
+            set -e
+            cd dist
+            sha256sum * > "goTimeSync-$RELEASE_VERSION-sha256.txt"
+            cat "goTimeSync-$RELEASE_VERSION-sha256.txt"
+
+        - name: create-release
+          type: git:release
+          options:
+            tag: v$RELEASE_VERSION
+            title: goTimeSync v$RELEASE_VERSION
+            description: |
+              goTimeSync v$RELEASE_VERSION（正式发版）
+              - NTP / 内网 HTTP 双协议时间源
+              - 主备链(-chain) 与多上游择优(-strategy best)
+              - 偏移阈值(-min-offset) 与大跳保护(-max-offset)
+              - 配置文件(goTimeSync.json) 驱动、日志落盘(-log)、状态文件(-status-file)
+              - server 模式可同时充当 NTP+HTTP 时间源
+              - 跨平台：Windows / Linux(amd64,arm64) / macOS(amd64,arm64)
+            latest: true
+
+        - name: upload-attachments
+          image: cnbcool/attachments:latest
+          settings:
+            tag: v$RELEASE_VERSION
+            attachments:
+              - "./dist/*"
+
+  # --- 手动触发：与 master push 相同流程 ---
+  web_trigger:
+    - name: manual-release
+      runner:
+        cpus: 8
+      docker:
+        image: golang:1.22
+      stages:
+        - name: set-version
+          script: |
+            git fetch --unshallow --quiet 2>/dev/null || true
+            COUNT=$(git rev-list --count HEAD 2>/dev/null || echo 0)
+            VERSION=$(awk "BEGIN{printf \"%.2f\", 1.0 + 0.01 * $COUNT}")
+            echo "==> 构建版本: v$VERSION (commits=$COUNT)"
+            echo "##[set-output VERSION=$VERSION]"
+          exports:
+            VERSION: RELEASE_VERSION
+
+        - name: test
+          script: |
+            set -e
+            go vet ./...
+            go test ./...
+
+        - name: build-binaries
+          script: |
+            set -e
+            mkdir -p dist
+            b() {
+              GOOS=$1 GOARCH=$2 CGO_ENABLED=0 \
+                go build -ldflags "-s -w -X main.Version=$RELEASE_VERSION" \
+                -o "dist/goTimeSync-$1-$2$3" .
+            }
+            b windows amd64 .exe
+            b linux amd64 ""
+            b linux arm64 ""
+            b darwin amd64 ""
+            b darwin arm64 ""
+            ls -lh dist/
+
+        - name: checksums
+          script: |
+            set -e
+            cd dist
+            sha256sum * > "goTimeSync-$RELEASE_VERSION-sha256.txt"
+            cat "goTimeSync-$RELEASE_VERSION-sha256.txt"
+
+        - name: create-release
+          type: git:release
+          options:
+            tag: v$RELEASE_VERSION
+            title: goTimeSync v$RELEASE_VERSION
+            description: |
+              goTimeSync v$RELEASE_VERSION（手动发布）
+              - NTP / 内网 HTTP 双协议时间源
+              - 主备链(-chain) 与多上游择优(-strategy best)
+              - 偏移阈值(-min-offset) 与大跳保护(-max-offset)
+              - 配置文件(goTimeSync.json) 驱动、日志落盘(-log)、状态文件(-status-file)
+              - server 模式可同时充当 NTP+HTTP 时间源
+              - 跨平台：Windows / Linux(amd64,arm64) / macOS(amd64,arm64)
+            latest: true
+
+        - name: upload-attachments
+          image: cnbcool/attachments:latest
+          settings:
+            tag: v$RELEASE_VERSION
+            attachments:
+              - "./dist/*"
+
+# --- PR：质量门禁（vet + test） ---
+"**":
+  pull_request:
+    - name: pr-check
+      runner:
+        cpus: 8
+      docker:
+        image: golang:1.22
+      stages:
+        - name: vet
+          script: |
+            set -e
+            go vet ./...
+        - name: test
+          script: |
+            set -e
+            go test ./...
