@@ -92,3 +92,23 @@ func TestOffsetDecision(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveConfigBoolFlagsOverride 验证显式 -check=false / -quiet=false 能覆盖配置文件中的 true
+// （旧实现硬编码 ec.Check = true，导致布尔 flag 的 false 值永远无法生效）。
+func TestResolveConfigBoolFlagsOverride(t *testing.T) {
+	origCheck, origQuiet, origSet := check, quiet, cliSetFlags
+	t.Cleanup(func() { check, quiet, cliSetFlags = origCheck, origQuiet, origSet })
+
+	f := false
+	check = &f
+	quiet = &f
+	cliSetFlags = map[string]bool{"check": true, "quiet": true}
+
+	ec := resolveConfig()
+	if ec.Check {
+		t.Error("-check=false 应覆盖 Check 为 false")
+	}
+	if ec.Quiet {
+		t.Error("-quiet=false 应覆盖 Quiet 为 false")
+	}
+}

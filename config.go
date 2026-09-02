@@ -283,11 +283,13 @@ func resolveConfig() effectiveConfig {
 	if cliSetFlags["timeout"] {
 		ec.Timeout = *timeoutSec
 	}
+	// 显式传入的 -check=false / -quiet=false 也要生效（覆盖配置文件中的 true），
+	// 故取 flag 实际值而非硬编码 true（flag.Visit 只记录“被显式设置”，不含值）。
 	if cliSetFlags["check"] {
-		ec.Check = true
+		ec.Check = *check
 	}
 	if cliSetFlags["quiet"] {
-		ec.Quiet = true
+		ec.Quiet = *quiet
 	}
 	if cliSetFlags["log"] {
 		ec.LogFile = *logFile

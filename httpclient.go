@@ -54,7 +54,8 @@ func queryHTTPTime(url string, timeout time.Duration, client *http.Client, metho
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return time.Time{}, 0, 0, fmt.Errorf("HTTP 状态码异常: %d %s", resp.StatusCode, resp.Status)
 	}
-	body, err := io.ReadAll(resp.Body)
+	// 响应体限长 1MB：时间应答远小于此，防御异常/恶意源用超大响应耗尽内存。
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return time.Time{}, 0, 0, fmt.Errorf("读取响应失败: %w", err)
 	}
@@ -121,29 +122,43 @@ func parseBodyTime(body []byte) (time.Time, error) {
 }
 
 // startTimeServer 启动一个 HTTP 时间服务器，供内网其它机器作为时间源。
-// 若 selfSyncNTP 为真，则后台定期用 NTP 校准本机时钟，使对外提供的时间更准确。
-func startTimeServer(addr string, selfSyncNTP bool, ntpServer string, interval time.Duration) error {
-	if selfSyncNTP {
+// 若 selfSync 为真，则后台按 ec.Interval 周期用 NTP(ec.NTPServer) 校准本机时钟；
+// 自校准同样受 ec.MinOffset / ec.MaxOffset 守卫（跳过微小偏移、拒绝异常大跳），
+// 避免异常上游把本机时钟带偏后继续对外提供错误时间。
+func startTimeServer(ec effectiveConfig, addr string, selfSync bool) error {
+	if selfSync {
 		go func() {
+			interval := time.Duration(ec.Interval) * time.Second
 			if interval <= 0 {
 				interval = time.Hour
 			}
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
-			// 启动即先校准一次
-			if corrected, off, _, err := queryNTP(ntpServer, 5*time.Second); err == nil {
-				_ = setSystemTime(corrected)
-				logf("server: 自身已用 NTP 校准, 偏移=%s", off.Round(time.Millisecond))
-			} else {
-				logf("server: 初始 NTP 校准失败: %v", err)
-			}
-			for range ticker.C {
-				if corrected, off, _, err := queryNTP(ntpServer, 5*time.Second); err == nil {
-					_ = setSystemTime(corrected)
-					logf("server: 周期 NTP 校准完成, 偏移=%s", off.Round(time.Millisecond))
-				} else {
-					logf("server: 周期 NTP 校准失败: %v", err)
+			selfCalibrate := func() {
+				timeout := time.Duration(ec.Timeout) * time.Second
+				corrected, off, _, err := queryNTP(ec.NTPServer, timeout)
+				if err != nil {
+					logf("server: NTP 自校准失败: %v", err)
+					return
 				}
+				switch offsetDecision(off.Abs(), ec.MinOffset, ec.MaxOffset) {
+				case "skip":
+					logf("server: 自校准偏移 %s 小于阈值 %dms，跳过", off.Round(time.Millisecond), ec.MinOffset)
+				case "reject":
+					logf("server: 自校准偏移 %s 超过大跳阈值 %dms，疑似异常源，拒绝设置",
+						off.Abs().Round(time.Millisecond), ec.MaxOffset)
+				default:
+					if err := setSystemTimeFn(corrected); err != nil {
+						logf("server: 自校准设置时间失败: %v", err)
+						return
+					}
+					logf("server: 自身已用 NTP 校准, 偏移=%s", off.Round(time.Millisecond))
+				}
+			}
+			// 启动即先校准一次，之后按周期执行
+			selfCalibrate()
+			for range ticker.C {
+				selfCalibrate()
 			}
 		}()
 	}
@@ -163,6 +178,15 @@ func startTimeServer(addr string, selfSyncNTP bool, ntpServer string, interval t
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+		// 超时加固：防止慢连接长期占用句柄（内网服务也做基本防护）
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	logf("HTTP 时间服务器已启动: http://%s/time", addr)
-	return http.ListenAndServe(addr, mux)
+	return srv.ListenAndServe()
 }

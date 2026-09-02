@@ -59,6 +59,12 @@ func queryNTP(server string, timeout time.Duration) (corrected time.Time, offset
 		return time.Time{}, 0, 0, fmt.Errorf("服务器返回 Kiss-of-Death (stratum=0), 参考标识: %q", resp[12:16])
 	}
 
+	// 校验时间戳非零：全零的 Receive/Transmit 时间戳说明服务器未同步或应答异常，
+	// 若照常计算会得到约 -126 年的荒谬偏移（NTP 纪元 1900 vs Unix 纪元 1970）。
+	if isZeroNTPStamp(resp[32:40]) || isZeroNTPStamp(resp[40:48]) {
+		return time.Time{}, 0, 0, fmt.Errorf("响应时间戳为零（服务器未同步或应答异常）")
+	}
+
 	// 响应包中：接收时间戳 t1 位于 [32:40]，发送时间戳 t2 位于 [40:48]
 	t1 := ntpBytesToTime(resp[32:40])
 	t2 := ntpBytesToTime(resp[40:48])
@@ -75,6 +81,16 @@ func queryNTP(server string, timeout time.Duration) (corrected time.Time, offset
 	corrected = t3.Add(offset)
 
 	return corrected, offset, delay, nil
+}
+
+// isZeroNTPStamp 判断 8 字节 NTP 时间戳是否全零。
+func isZeroNTPStamp(b []byte) bool {
+	for _, v := range b {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func timeToNTP(t time.Time) (uint32, uint32) {

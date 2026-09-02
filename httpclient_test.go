@@ -55,8 +55,10 @@ func TestQueryHTTPTimeOK(t *testing.T) {
 	if off.Abs() > 2*time.Second {
 		t.Errorf("偏移过大，疑似解析错误: %v", off)
 	}
-	if d <= 0 {
-		t.Errorf("延时应为正: %v", d)
+	// Windows 上 nanotime 约 0.5ms 才更新一次，回环响应可能快于一个刻度而测得 rtt=0，
+	// 故只要求非负（真实网络源必然为正；delay 仅用于日志与 best 策略排序，为 0 无害）。
+	if d < 0 {
+		t.Errorf("延时应非负: %v", d)
 	}
 	_ = c
 }

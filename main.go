@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -147,7 +149,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "警告: NTP 服务器启动失败，仅启用 HTTP 时间服务器: %v\n", err)
 			}
 		}
-		if err := startTimeServer(*serverAddr, *serverNTP, *ntpServer, time.Duration(*interval)*time.Second); err != nil {
+		if err := startTimeServer(ec, *serverAddr, *serverNTP); err != nil {
 			fmt.Fprintf(os.Stderr, "HTTP 时间服务器启动失败: %v\n", err)
 			os.Exit(1)
 		}
@@ -212,7 +214,8 @@ func doSync(ec effectiveConfig) error {
 		return fmt.Errorf("无可用的同步源")
 	}
 
-	// best 策略：并发请求所有源，取最小延时者（延迟越低通常越近、越可信）
+	// best 策略：并发请求所有源，收集成功者按延时从低到高依次尝试；
+	// 偏移超过大跳阈值的源视为异常，拒绝后自动尝试下一个（与 -max-offset 帮助文本一致）。
 	if ec.Strategy == "best" && len(sources) > 1 {
 		type res struct {
 			src       timeSource
@@ -231,7 +234,7 @@ func doSync(ec effectiveConfig) error {
 		}
 		// 总时限：所有并发源共享一个截止时间，避免个别慢源把整体拖到 N*timeout。
 		deadline := time.After(timeout)
-		var best *res
+		var ok []res
 	loop:
 		for i := 0; i < len(chs); i++ {
 			var r res
@@ -250,19 +253,31 @@ func doSync(ec effectiveConfig) error {
 				logf("源 %s 失败: %v", r.src.label, r.err)
 				continue
 			}
-			if best == nil || r.delay < best.delay {
-				b := r
-				best = &b
-			}
+			ok = append(ok, r)
 		}
-		if best == nil {
+		if len(ok) == 0 {
 			writeStatusSafe(ec, "", 0, 0, false, "所有源失败")
 			return fmt.Errorf("所有时间源均失败（best 策略）")
 		}
-		return applyCorrection(ec, best.src, best.corrected, best.offset, best.delay)
+		sort.Slice(ok, func(i, j int) bool { return ok[i].delay < ok[j].delay })
+		var lastErr error
+		for _, r := range ok {
+			err := applyCorrection(ec, r.src, r.corrected, r.offset, r.delay)
+			if err == nil {
+				return nil
+			}
+			if errors.Is(err, errOffsetRejected) {
+				lastErr = err
+				continue
+			}
+			return err
+		}
+		writeStatusSafe(ec, "", 0, 0, false, lastErr.Error())
+		return lastErr
 	}
 
-	// fallback 策略：顺序尝试，首个成功者用于校准
+	// fallback 策略：顺序尝试，首个成功且通过偏移守卫的源用于校准；
+	// 偏移超过大跳阈值的源视为异常，拒绝后继续尝试下一个。
 	var lastErr error
 	for _, s := range sources {
 		c, o, d, e := querySource(s, timeout, ec.HTTPMethod)
@@ -271,10 +286,21 @@ func doSync(ec effectiveConfig) error {
 			logf("源 %s 失败: %v，尝试下一个", s.label, e)
 			continue
 		}
-		return applyCorrection(ec, s, c, o, d)
+		err := applyCorrection(ec, s, c, o, d)
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, errOffsetRejected) {
+			lastErr = err
+			continue
+		}
+		return err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("无可用的同步源")
 	}
 	writeStatusSafe(ec, "", 0, 0, false, lastErr.Error())
-	return fmt.Errorf("所有时间源均失败，最后错误: %w", lastErr)
+	return fmt.Errorf("所有时间源均失败或被拒，最后错误: %w", lastErr)
 }
 
 // querySource 按源类型调用对应客户端。
@@ -305,6 +331,12 @@ func validateConfig(ec effectiveConfig) error {
 	}
 }
 
+// errOffsetRejected 标记“源偏移超过大跳保护阈值被拒绝”。doSync 捕获后应跳过该源继续尝试下一个。
+var errOffsetRejected = errors.New("偏移超过大跳保护阈值")
+
+// setSystemTimeFn 指向实际的系统时间写入实现；作为包级变量便于测试注入，避免单测改动真实时钟。
+var setSystemTimeFn = setSystemTime
+
 // applyCorrection 处理命中源后的偏移阈值、大跳保护与系统时间写入，并写状态文件。
 func applyCorrection(ec effectiveConfig, src timeSource, corrected time.Time, offset, delay time.Duration) error {
 	logf("命中源=%s 偏移=%s 延时=%s 校准后=%s",
@@ -327,9 +359,9 @@ func applyCorrection(ec effectiveConfig, src timeSource, corrected time.Time, of
 		msg := fmt.Sprintf("偏移 %s 超过大跳阈值 %dms，疑似异常源，拒绝设置", offset.Abs().Round(time.Millisecond), ec.MaxOffset)
 		logf("%s", msg)
 		writeStatusSafe(ec, src.label, offset, delay, false, "rejected(max-offset)")
-		return fmt.Errorf("%s", msg)
+		return fmt.Errorf("%w: %s", errOffsetRejected, msg)
 	}
-	if err := setSystemTime(corrected); err != nil {
+	if err := setSystemTimeFn(corrected); err != nil {
 		writeStatusSafe(ec, src.label, offset, delay, false, "set-failed: "+err.Error())
 		return fmt.Errorf("设置系统时间失败: %w", err)
 	}
