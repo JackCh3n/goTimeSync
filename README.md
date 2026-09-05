@@ -26,6 +26,7 @@
 
 - **推荐（自动注入版本号）**：双击 `build.bat`，版本号按 `1.00 + 0.01 × git 提交次数` 自动计算并通过 `-ldflags` 注入 `main.Version`。
 - 手动编译：`go build -o goTimeSync.exe .`（此时 `version` 子命令显示 `dev`）。
+- **CI 自动发版**：推送即自动构建并发布。`.cnb.yml`（cnb.cool）与 `.github/workflows/release.yml`（GitHub Actions）行为对齐：vet+test → 5 平台交叉编译（windows/linux/darwin × amd64/arm64）→ SHA256 校验和 → 创建 Release 并上传附件；master 推送与手动触发按提交数取版本号，推送 `v*` Tag 则以 Tag 名发版。
 
 版本规则：每提交一次递增 0.01（如第 9 次提交为 `v1.09`），`version` 子命令与 `build.bat` 均遵循此规则。
 
@@ -63,7 +64,7 @@ goTimeSync version                  查看版本
 | `-hook-events` | 钩子触发事件：`synced,failed,rejected,skipped` | `synced,failed,rejected` |
 | `-http-time-layout` | HTTP 源自定义时间布局（Go time layout，如 `"2006-01-02 15:04:05"`），优先于内置格式解析，无时区戳按本机时区解释 | 空 |
 
-server 模式参数：`-server-addr`（监听地址，默认 `:8080`）、`-server-ntp`（后台用 NTP 校准本机时钟，默认 `true`）。
+server 模式参数：`-server-addr`（监听地址，默认 `:8080`）、`-server-ntp`（后台用 NTP 校准本机时钟，默认 `true`）、`-server-ntp-serve`（同时启动 NTP 服务器 UDP，默认 `true`）、`-server-ntp-port`（NTP 端口，默认 `123` 需管理员，被 w32time 占用时可改其它端口）。server 模式的自校准同样受 `-min-offset` / `-max-offset` 守卫。
 
 ### 示例
 
@@ -84,6 +85,18 @@ goTimeSync.exe server -server-addr :8080
 goTimeSync.exe install
 goTimeSync.exe status
 goTimeSync.exe uninstall
+
+# 生产建议组合：多次采样防抖 + 大跳保护
+goTimeSync.exe run -chain "ntp:pool.ntp.org:123" -samples 3 -max-offset 3600000
+
+# 同步失败 / 大跳拒绝时回调告警接口
+goTimeSync.exe run -chain "ntp:pool.ntp.org:123" -hook-url http://ops.local:9000/alert -hook-events failed,rejected
+
+# 内网设备返回非标准时间格式（如纯文本 "2026-09-06 12:00:00"）
+goTimeSync.exe run -source http -http-url http://10.0.0.5/time -http-time-layout "2006-01-02 15:04:05"
+
+# 环境诊断（权限/端口/时间源连通性）
+goTimeSync.exe doctor
 ```
 
 ## 主备模式（failover）
@@ -107,11 +120,12 @@ goTimeSync.exe install -chain "ntp:pool.ntp.org:123,http://127.0.0.1:8080/time" 
 
 `source=http`（或 `-chain` 中的 `http:` 项）时，工具向目标地址发起 GET 请求，按以下优先级取时间：
 
-1. **响应体**（优先，亚秒精度）：本工具自带服务器、自定义 `/time` 接口返回的时间，支持以下格式：
+1. **自定义布局**（若指定 `-http-time-layout`，Go time layout，如 `"2006-01-02 15:04:05"`）：适配返回特殊格式的内网设备；无时区戳按本机时区解释；布局解析失败自动回退下方内置格式。
+2. **响应体**（亚秒精度）：本工具自带服务器、自定义 `/time` 接口返回的时间，支持以下格式：
    - JSON：`{"time":"2026-07-06T17:40:59.123Z","unix":1783331459,"unixMs":1783331459123}`（优先用 `time` 字段，含亚秒）
    - 纯 RFC3339 字符串：`2026-07-06T17:40:59.123Z`
    - 纯 Unix 时间戳（秒或毫秒）
-2. **响应头 `Date`**（回退，整秒精度）：兼容普通 Web 服务器，如 nginx 返回的 `Date: Tue, 07 Jul 2026 02:41:52 GMT`。
+3. **响应头 `Date`**（回退，整秒精度）：兼容普通 Web 服务器，如 nginx 返回的 `Date: Tue, 07 Jul 2026 02:41:52 GMT`。
 
 内置 `server` 模式返回上述 JSON（路径 `/time`），可直接作为内网时间源使用，且对外提供亚秒级精度。借助 `Date` 头兼容，任意正常 Web 站点（如 `http://127.0.0.1:8080/time`）也能作为粗略时间源（整秒精度）。
 
@@ -211,6 +225,46 @@ chcp 936 >nul 2>nul
 - **Windows**：`install` 通过系统计划任务以 SYSTEM 身份在系统启动时运行（需管理员）。若检测到更名前残留的旧任务 `WinTimeSync`，会自动删除迁移到 `GoTimeSync`。
 - **Linux**：`install` 生成用户级 **systemd 单元**（`~/.config/systemd/user/gotimesync.service`），并打印启用命令（`systemctl --user enable --now gotimesync`）。root 级可复制到 `/etc/systemd/system/`。
 - **macOS**：`install` 生成用户级 **LaunchAgent**（`~/Library/LaunchAgents/com.gotimesync.plist`），并打印加载命令（`launchctl load -w`）。系统级可放 `/Library/LaunchDaemons/`。
+
+### Windows 原生服务（service，可选）
+
+除计划任务外，Windows 还可用 **SCM 原生服务**方式部署（需管理员）：
+
+```bash
+goTimeSync.exe service install -chain "ntp:pool.ntp.org:123" -interval 60   # 安装（参数固化为服务启动命令）
+goTimeSync.exe service start | stop | status                                # 生命周期管理
+goTimeSync.exe service uninstall                                            # 卸载
+```
+
+与 `install`（计划任务）的区别：原生服务注册为自动启动，并配置**崩溃自动重启**（5s/60s 两级恢复）；两种方式二选一即可，重复部署会同时运行两个同步进程。
+
+## 环境诊断（doctor）
+
+排障时先跑 `goTimeSync doctor`，一条命令完成体检并给出 `[✓]/[!]/[✗]` 结论：
+
+- 管理员权限（设置系统时间 / 绑定 NTP 端口的前提）
+- 配置文件是否存在且 JSON 合法、日志目录是否可写
+- UDP NTP 端口与 HTTP 监听端口能否绑定（server 模式相关，含 w32time 占用提示）
+- 链上每个时间源的连通性、当前偏移与延时（只查询，不改系统时间）
+
+存在影响同步的问题时退出码为 `1`，可脚本化巡检。
+
+## 事件 Webhook（-hook-url）
+
+配置 `-hook-url` 后，同步事件发生时会向该地址 POST JSON（超时 10 秒，失败仅记日志，不影响同步）：
+
+```json
+{
+  "event": "rejected",
+  "source": "ntp:pool.ntp.org:123",
+  "offset_ms": 7200000.000,
+  "delay_ms": 12.500,
+  "error": "偏移 2h0m0s 超过大跳阈值 3600000ms，疑似异常源，拒绝设置",
+  "time": "2026-09-06T12:00:00+08:00"
+}
+```
+
+触发事件由 `-hook-events` 过滤：`synced`（已写入系统时间）/ `skipped`（低于 min-offset 阈值）/ `rejected`（大跳保护拒绝）/ `failed`（全部源失败或写钟失败），默认 `synced,failed,rejected`。地址仅支持 http/https。
 
 ## 注意事项
 
