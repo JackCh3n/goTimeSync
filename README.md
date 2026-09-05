@@ -12,8 +12,12 @@
 - **内网 HTTP 时间源**：请求内网地址，按 `RTT/2` 估算偏移并校准系统时间。
 - **内置 HTTP 时间服务器**（`server` 模式）：把本机变成内网时间源，对外提供 `/time` 接口（可选后台用 NTP 自校准）。
 - **内置 NTP 服务器**（`server` 模式，UDP 123）：`server` 模式可同时启动 NTP 服务端与 HTTP 服务端，使本机**同时充当 NTP + HTTP 双协议时间源**，对内网其它机器提供时间（需管理员，且 123 端口未被占用）。
-- **定时同步**：`-interval` 指定秒数，循环执行。
+- **定时同步**：`-interval` 指定秒数，循环执行；同步失败自动退避重试（30s→2m→10m），成功后恢复正周期。
 - **只读检查**：`-check` 只打印偏差，不修改系统时间。
+- **多次采样防抖**：`-samples N` 连续采样取中位偏移，波动超 `-sample-tolerance-ms` 判为不稳定源并尝试下一个。
+- **环境诊断**：`doctor` 一条命令体检管理员权限、端口占用、时间源连通性与配置文件。
+- **事件 Webhook**：`-hook-url` 在同步成功/失败/大跳拒绝时 POST JSON 通知，便于接入告警。
+- **Windows 原生服务**：`service install` 注册 SCM 服务（开机自启 + 崩溃自动重启），`run`/`server` 均支持 Ctrl+C/SIGTERM 优雅退出。
 - **开机启动**：`install` 注册系统级计划任务（SYSTEM 账户，无需登录用户即运行）。
 
 ## 编译
@@ -28,12 +32,15 @@
 ## 使用
 
 ```bash
-goTimeSync run                      持续运行，按 -interval 周期同步（默认 3600 秒）
+goTimeSync run                      持续运行，按 -interval 周期同步（失败自动退避重试）
 goTimeSync once                     立即同步一次后退出
 goTimeSync server                   启动 HTTP 时间服务器，对内网提供时间源
+goTimeSync doctor                   环境诊断：管理员权限/端口占用/时间源连通性/配置检查
 goTimeSync install                  注册为系统开机启动（计划任务，需管理员）
 goTimeSync uninstall                移除开机启动
 goTimeSync status                   查看是否已注册开机启动
+goTimeSync service install|uninstall|start|stop|status
+                                    Windows 原生服务（崩溃自动重启，需管理员，仅 Windows）
 goTimeSync version                  查看版本
 ```
 
@@ -50,6 +57,11 @@ goTimeSync version                  查看版本
 | `-timeout` | 单次请求超时（秒） | `5` |
 | `-check` | 仅检查时间偏差，不修改系统时间 | `false` |
 | `-quiet` | 安静模式，仅输出错误 | `false` |
+| `-samples` | 单源连续采样次数，N>1 时取中位偏移，抵御单次网络抖动 | `1` |
+| `-sample-tolerance-ms` | 多次采样的偏移波动容差，超限判为源不稳定并尝试下一个 | `100` |
+| `-hook-url` | 同步事件 Webhook 地址，事件后 POST JSON（`event/source/offset_ms/delay_ms/error/time`，仅 http/https） | 空 |
+| `-hook-events` | 钩子触发事件：`synced,failed,rejected,skipped` | `synced,failed,rejected` |
+| `-http-time-layout` | HTTP 源自定义时间布局（Go time layout，如 `"2006-01-02 15:04:05"`），优先于内置格式解析，无时区戳按本机时区解释 | 空 |
 
 server 模式参数：`-server-addr`（监听地址，默认 `:8080`）、`-server-ntp`（后台用 NTP 校准本机时钟，默认 `true`）。
 
@@ -209,5 +221,6 @@ chcp 936 >nul 2>nul
 
 ## Roadmap（计划中）
 
+- **Prometheus /metrics**：server 模式暴露偏移/延时/源健康指标，接入现有监控。
 - **NTS（RFC 8915，NTP over TLS）**：面向公网单向时间同步的加密校验，内网工具暂列为后续方向。
 - 更多平台（FreeBSD 等）的开机启动支持。

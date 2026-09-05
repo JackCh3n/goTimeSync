@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -125,14 +126,15 @@ func ntpToTime(sec, frac uint32) time.Time {
 // startNTPServer 启动一个 NTP 服务端（UDP），把本机当前系统时间作为时间源应答给客户端。
 // 它读取 mode=3 的客户端请求，回复标准 mode=4 的服务器报文（RFC5905）。
 // 注意：绑定 123 端口需要管理员权限，且该端口不能被其它程序（如 Windows 的 w32time）占用。
-// 函数在独立 goroutine 中运行，不阻塞调用方；启动失败返回 error（调用方可选择仅保留 HTTP 服务）。
+// 启动失败返回 error（调用方可选择仅保留 HTTP 服务）；成功时返回 stop 函数，
+// 调用 stop 后服务协程随连接关闭退出（供优雅退出使用）。
 //
 // 安全加固：仅应答 mode=3 且长度恰好 48 字节的合法客户端请求，其余一律丢弃。
 // 响应与请求等长（48 字节对 48 字节），不放大流量，从机制上避免 NTP 反射/放大攻击。
-func startNTPServer(addr string) error {
+func startNTPServer(addr string) (func(), error) {
 	pc, err := net.ListenPacket("udp", addr)
 	if err != nil {
-		return fmt.Errorf("启动 NTP 服务器失败(需管理员且端口未被占用): %w", err)
+		return nil, fmt.Errorf("启动 NTP 服务器失败(需管理员且端口未被占用): %w", err)
 	}
 	logf("NTP 服务器已启动: %s (UDP)", addr)
 	go func() {
@@ -140,7 +142,9 @@ func startNTPServer(addr string) error {
 		for {
 			n, src, err := pc.ReadFrom(buf)
 			if err != nil {
-				logf("NTP 读取错误: %v", err)
+				if !errors.Is(err, net.ErrClosed) {
+					logf("NTP 读取错误: %v", err)
+				}
 				_ = pc.Close()
 				return
 			}
@@ -156,7 +160,7 @@ func startNTPServer(addr string) error {
 			}
 		}
 	}()
-	return nil
+	return func() { _ = pc.Close() }, nil
 }
 
 // buildNTPResponse 依据客户端请求(req)构造标准 NTP 服务器响应(mode=4)。

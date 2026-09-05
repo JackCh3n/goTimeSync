@@ -28,6 +28,12 @@ type effectiveConfig struct {
 	MinOffset  int64  // 偏移阈值(ms)：绝对值小于该值则跳过设置（0=不限制）
 	MaxOffset  int64  // 大跳保护(ms)：绝对值大于该值视为异常源拒绝，并尝试下一个（0=不限制）
 	Strategy   string // 多源策略: fallback(顺序试错) | best(并发择优取最小延时)
+
+	Samples           int    // 单源连续采样次数（>1 时取中位偏移，抵御单次网络抖动）
+	SampleToleranceMs int64  // 多次采样的偏移波动容差(ms)
+	HookURL           string // 同步事件 Webhook 地址（POST JSON）
+	HookEvents        string // 钩子触发事件: synced,failed,rejected,skipped
+	HTTPTimeLayout    string // HTTP 源自定义时间布局（Go time layout，优先于内置格式）
 }
 
 // fileConfig 对应 goTimeSync.json 的字段（JSON 名称即对外约定）。
@@ -46,6 +52,12 @@ type fileConfig struct {
 	MinOffset  int64  `json:"min_offset_ms"`
 	MaxOffset  int64  `json:"max_offset_ms"`
 	Strategy   string `json:"strategy"`
+
+	Samples           int    `json:"samples"`
+	SampleToleranceMs int64  `json:"sample_tolerance_ms"`
+	HookURL           string `json:"hook_url"`
+	HookEvents        string `json:"hook_events"`
+	HTTPTimeLayout    string `json:"http_time_layout"`
 }
 
 // cliSetFlags 记录命令行中被显式设置的 flag（用于覆盖配置文件中的同名项）。
@@ -182,6 +194,18 @@ func initLogger(logRoot string, quiet bool) {
 	logCurFile = dw
 }
 
+// closeLog 优雅退出前刷新并关闭日志文件句柄，避免落盘内容滞留缓冲或句柄占用。
+func closeLog() {
+	logMu.Lock()
+	defer logMu.Unlock()
+	if logCurFile != nil {
+		_ = logCurFile.Close()
+		logCurFile = nil
+	}
+	logOut = os.Stdout
+	logCurRoot = ""
+}
+
 // logf 记录一条带时间戳的信息到日志目标。quiet 是否静音由 initLogger 决定（不静音则同时写控制台）。
 func logf(format string, args ...interface{}) {
 	logMu.Lock()
@@ -208,6 +232,12 @@ func resolveConfig() effectiveConfig {
 		MinOffset:  *minOffset,
 		MaxOffset:  *maxOffset,
 		Strategy:   *strategy,
+
+		Samples:           *samples,
+		SampleToleranceMs: *sampleTolMs,
+		HookURL:           *hookURL,
+		HookEvents:        *hookEvents,
+		HTTPTimeLayout:    *httpTimeLayout,
 	}
 	// 配置文件覆盖（仅应用于非零/非空字段）
 	if path := configFilePath(); path != "" {
@@ -255,6 +285,21 @@ func resolveConfig() effectiveConfig {
 				}
 				if fc.Strategy != "" {
 					ec.Strategy = fc.Strategy
+				}
+				if fc.Samples != 0 {
+					ec.Samples = fc.Samples
+				}
+				if fc.SampleToleranceMs != 0 {
+					ec.SampleToleranceMs = fc.SampleToleranceMs
+				}
+				if fc.HookURL != "" {
+					ec.HookURL = fc.HookURL
+				}
+				if fc.HookEvents != "" {
+					ec.HookEvents = fc.HookEvents
+				}
+				if fc.HTTPTimeLayout != "" {
+					ec.HTTPTimeLayout = fc.HTTPTimeLayout
 				}
 			} else {
 				logf("配置文件 %s 解析失败，使用命令行/默认配置", path)
@@ -306,6 +351,21 @@ func resolveConfig() effectiveConfig {
 	if cliSetFlags["strategy"] {
 		ec.Strategy = *strategy
 	}
+	if cliSetFlags["samples"] {
+		ec.Samples = *samples
+	}
+	if cliSetFlags["sample-tolerance-ms"] {
+		ec.SampleToleranceMs = *sampleTolMs
+	}
+	if cliSetFlags["hook-url"] {
+		ec.HookURL = *hookURL
+	}
+	if cliSetFlags["hook-events"] {
+		ec.HookEvents = *hookEvents
+	}
+	if cliSetFlags["http-time-layout"] {
+		ec.HTTPTimeLayout = *httpTimeLayout
+	}
 
 	if ec.Interval < 1 {
 		ec.Interval = 1
@@ -313,8 +373,17 @@ func resolveConfig() effectiveConfig {
 	if ec.Timeout < 1 {
 		ec.Timeout = 1
 	}
+	if ec.Samples < 1 {
+		ec.Samples = 1
+	}
+	if ec.SampleToleranceMs < 0 {
+		ec.SampleToleranceMs = 0
+	}
 	if ec.Strategy == "" {
 		ec.Strategy = "fallback"
+	}
+	if ec.HookEvents == "" {
+		ec.HookEvents = "synced,failed,rejected"
 	}
 	return ec
 }

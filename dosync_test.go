@@ -23,8 +23,8 @@ func withFakeClock(t *testing.T) func() time.Time {
 	return func() time.Time { return got }
 }
 
-// newTimeHTTPServer 起一个返回指定时间的 HTTP 时间源（RFC3339Nano JSON）。
-func newTimeHTTPServer(t *testing.T, ts time.Time) *httptest.Server {
+// newTestTimeServer 起一个返回指定时间的 HTTP 时间源（RFC3339Nano JSON）。
+func newTestTimeServer(t *testing.T, ts time.Time) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -42,8 +42,8 @@ func newTimeHTTPServer(t *testing.T, ts time.Time) *httptest.Server {
 func TestDoSyncSkipsRejectedSource(t *testing.T) {
 	for _, strategy := range []string{"fallback", "best"} {
 		t.Run(strategy, func(t *testing.T) {
-			bad := newTimeHTTPServer(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
-			good := newTimeHTTPServer(t, time.Now().UTC())
+			bad := newTestTimeServer(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+			good := newTestTimeServer(t, time.Now().UTC())
 			gotClock := withFakeClock(t)
 
 			ec := effectiveConfig{
@@ -69,7 +69,7 @@ func TestDoSyncSkipsRejectedSource(t *testing.T) {
 
 // TestDoSyncAllRejected 验证所有源都超过大跳阈值时返回错误且不写系统时间。
 func TestDoSyncAllRejected(t *testing.T) {
-	bad := newTimeHTTPServer(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+	bad := newTestTimeServer(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
 	gotClock := withFakeClock(t)
 
 	ec := effectiveConfig{

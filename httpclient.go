@@ -20,8 +20,10 @@ type httpTimeResponse struct {
 // queryHTTPTime 请求内网 HTTP 时间服务器，测量往返耗时(RTT)，估算时间偏移并校准。
 // 通过 t0(发请求前) / t3(收响应后) 与服务器返回的时间，按 (serverTime + RTT/2) 估算服务端当前时间。
 // method 指定请求方法（"" 或 "get" 用 GET，"post" 用 POST），兼容只暴露 POST 接口的内网服务。
+// layout 为 -http-time-layout 自定义时间布局（Go time layout；非空时优先于内置格式解析，
+// 无时区戳按本机时区解释），用于适配返回特殊格式的内网设备。
 // 显式校验：仅接受 2xx 状态码；不跟随重定向（遇到 3xx 直接判失败，交由主备链尝试下一个源）。
-func queryHTTPTime(url string, timeout time.Duration, client *http.Client, method string) (corrected time.Time, offset, delay time.Duration, err error) {
+func queryHTTPTime(url string, timeout time.Duration, client *http.Client, method, layout string) (corrected time.Time, offset, delay time.Duration, err error) {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
@@ -62,17 +64,25 @@ func queryHTTPTime(url string, timeout time.Duration, client *http.Client, metho
 	t3 := time.Now()
 
 	// 取时间优先级：
-	//   ① 响应体（携带亚秒精度，如工具自带服务器 / 自定义 /time 接口的 RFC3339Nano）
-	//   ② 响应头 Date（兼容普通 Web 服务器，如 nginx 的 "Date: Tue, 07 Jul 2026 02:41:52 GMT"，整秒精度）
-	// 这样对自带服务器可读到毫秒级精度，对只返回 Date 头的普通站点仍可取时。
+	//   ① 自定义布局 -http-time-layout（用户显式指定，适配内网设备的特殊格式）
+	//   ② 响应体（JSON / RFC3339 / Unix 时间戳）
+	//   ③ 响应头 Date（兼容普通 Web 服务器，整秒精度）
 	var serverTime time.Time
-	if st, e := parseBodyTime(body); e == nil {
-		serverTime = st
-	} else if dateHdr := resp.Header.Get("Date"); dateHdr != "" {
-		if ts, e2 := time.Parse(http.TimeFormat, dateHdr); e2 == nil {
-			serverTime = ts.UTC()
-		} else if ts2, e3 := time.Parse(time.RFC1123Z, dateHdr); e3 == nil {
-			serverTime = ts2.UTC()
+	if layout != "" {
+		// 无时区戳按本机时区解释（内网设备墙钟通常与客户端同时区）
+		if ts, e := time.ParseInLocation(layout, strings.TrimSpace(string(body)), time.Local); e == nil {
+			serverTime = ts
+		}
+	}
+	if serverTime.IsZero() {
+		if st, e := parseBodyTime(body); e == nil {
+			serverTime = st
+		} else if dateHdr := resp.Header.Get("Date"); dateHdr != "" {
+			if ts, e2 := time.Parse(http.TimeFormat, dateHdr); e2 == nil {
+				serverTime = ts.UTC()
+			} else if ts2, e3 := time.Parse(time.RFC1123Z, dateHdr); e3 == nil {
+				serverTime = ts2.UTC()
+			}
 		}
 	}
 	if serverTime.IsZero() {
@@ -121,46 +131,12 @@ func parseBodyTime(body []byte) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("无法解析时间响应: %q", raw)
 }
 
-// startTimeServer 启动一个 HTTP 时间服务器，供内网其它机器作为时间源。
-// 若 selfSync 为真，则后台按 ec.Interval 周期用 NTP(ec.NTPServer) 校准本机时钟；
-// 自校准同样受 ec.MinOffset / ec.MaxOffset 守卫（跳过微小偏移、拒绝异常大跳），
-// 避免异常上游把本机时钟带偏后继续对外提供错误时间。
-func startTimeServer(ec effectiveConfig, addr string, selfSync bool) error {
+// newTimeHTTPServer 构造 HTTP 时间服务器（含路由与超时加固）；
+// selfSync 为真时另起协程按 ec.Interval 周期用 NTP(ec.NTPServer) 校准本机时钟。
+// 返回的 *http.Server 由调用方 ListenAndServe / Shutdown（优雅退出）。
+func newTimeHTTPServer(ec effectiveConfig, addr string, selfSync bool) *http.Server {
 	if selfSync {
-		go func() {
-			interval := time.Duration(ec.Interval) * time.Second
-			if interval <= 0 {
-				interval = time.Hour
-			}
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
-			selfCalibrate := func() {
-				timeout := time.Duration(ec.Timeout) * time.Second
-				corrected, off, _, err := queryNTP(ec.NTPServer, timeout)
-				if err != nil {
-					logf("server: NTP 自校准失败: %v", err)
-					return
-				}
-				switch offsetDecision(off.Abs(), ec.MinOffset, ec.MaxOffset) {
-				case "skip":
-					logf("server: 自校准偏移 %s 小于阈值 %dms，跳过", off.Round(time.Millisecond), ec.MinOffset)
-				case "reject":
-					logf("server: 自校准偏移 %s 超过大跳阈值 %dms，疑似异常源，拒绝设置",
-						off.Abs().Round(time.Millisecond), ec.MaxOffset)
-				default:
-					if err := setSystemTimeFn(corrected); err != nil {
-						logf("server: 自校准设置时间失败: %v", err)
-						return
-					}
-					logf("server: 自身已用 NTP 校准, 偏移=%s", off.Round(time.Millisecond))
-				}
-			}
-			// 启动即先校准一次，之后按周期执行
-			selfCalibrate()
-			for range ticker.C {
-				selfCalibrate()
-			}
-		}()
+		go selfSyncLoop(ec)
 	}
 
 	mux := http.NewServeMux()
@@ -188,5 +164,42 @@ func startTimeServer(ec effectiveConfig, addr string, selfSync bool) error {
 		IdleTimeout:       60 * time.Second,
 	}
 	logf("HTTP 时间服务器已启动: http://%s/time", addr)
-	return srv.ListenAndServe()
+	return srv
+}
+
+// selfSyncLoop 是 server 模式的后台 NTP 自校准循环：按 ec.Interval 周期校准，
+// 同样受 ec.MinOffset / ec.MaxOffset 守卫（跳过微小偏移、拒绝异常大跳），
+// 避免异常上游把本机时钟带偏后继续对外提供错误时间。
+func selfSyncLoop(ec effectiveConfig) {
+	interval := time.Duration(ec.Interval) * time.Second
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	selfCalibrate := func() {
+		corrected, off, _, err := queryNTP(ec.NTPServer, time.Duration(ec.Timeout)*time.Second)
+		if err != nil {
+			logf("server: NTP 自校准失败: %v", err)
+			return
+		}
+		switch offsetDecision(off.Abs(), ec.MinOffset, ec.MaxOffset) {
+		case "skip":
+			logf("server: 自校准偏移 %s 小于阈值 %dms，跳过", off.Round(time.Millisecond), ec.MinOffset)
+		case "reject":
+			logf("server: 自校准偏移 %s 超过大跳阈值 %dms，疑似异常源，拒绝设置",
+				off.Abs().Round(time.Millisecond), ec.MaxOffset)
+		default:
+			if err := setSystemTimeFn(corrected); err != nil {
+				logf("server: 自校准设置时间失败: %v", err)
+				return
+			}
+			logf("server: 自身已用 NTP 校准, 偏移=%s", off.Round(time.Millisecond))
+		}
+	}
+	// 启动即先校准一次，之后按周期执行
+	selfCalibrate()
+	for range ticker.C {
+		selfCalibrate()
+	}
 }

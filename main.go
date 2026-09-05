@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -34,6 +39,11 @@ var (
 	serverNTPServe = flag.Bool("server-ntp-serve", true, "server 模式下是否同时启动 NTP 服务器(UDP)，使本机兼作 NTP 时间源")
 	serverNTPPort  = flag.String("server-ntp-port", "123", "NTP 服务器监听端口 (server 模式, 默认 123，需管理员)")
 	quiet          = flag.Bool("quiet", false, "安静模式，仅输出错误（日志文件仍记录）")
+	samples        = flag.Int("samples", 1, "单源连续采样次数（N>1 时多次采样取中位偏移，抵御单次网络抖动）")
+	sampleTolMs    = flag.Int64("sample-tolerance-ms", 100, "多次采样的偏移波动容差(ms)：最大-最小偏移超过该值则本次判为源不稳定")
+	hookURL        = flag.String("hook-url", "", "同步事件 Webhook 地址，事件后 POST JSON（字段: event/source/offset_ms/delay_ms/error/time；仅 http/https）")
+	hookEvents     = flag.String("hook-events", "synced,failed,rejected", "钩子触发事件，逗号分隔: synced,failed,rejected,skipped")
+	httpTimeLayout = flag.String("http-time-layout", "", "HTTP 源自定义时间布局（Go time layout，如 \"2006-01-02 15:04:05\"），优先于内置格式解析")
 )
 
 // timeSource 表示主备链中的一个时间源。
@@ -125,7 +135,18 @@ func main() {
 			os.Exit(1)
 		}
 		initLogger(ec.LogFile, ec.Quiet)
+		if isWindowsService() {
+			// 由 Windows 服务控制管理器启动：注册控制处理器后进入同步循环
+			if err := runServiceMode(ec); err != nil {
+				fmt.Fprintf(os.Stderr, "%v\n", err)
+				os.Exit(1)
+			}
+			closeLog()
+			return
+		}
+		installSignalHandler()
 		runLoop(ec)
+		closeLog()
 	case "once":
 		ec := resolveConfig()
 		if err := validateConfig(ec); err != nil {
@@ -144,13 +165,41 @@ func main() {
 			os.Exit(1)
 		}
 		initLogger(ec.LogFile, ec.Quiet)
+		installSignalHandler()
+		stopNTP := func() {}
 		if *serverNTPServe {
-			if err := startNTPServer(":" + *serverNTPPort); err != nil {
+			stop, err := startNTPServer(":" + *serverNTPPort)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "警告: NTP 服务器启动失败，仅启用 HTTP 时间服务器: %v\n", err)
+			} else {
+				stopNTP = stop
 			}
 		}
-		if err := startTimeServer(ec, *serverAddr, *serverNTP); err != nil {
-			fmt.Fprintf(os.Stderr, "HTTP 时间服务器启动失败: %v\n", err)
+		srv := newTimeHTTPServer(ec, *serverAddr, *serverNTP)
+		srvErr := make(chan error, 1)
+		go func() { srvErr <- srv.ListenAndServe() }()
+		select {
+		case err := <-srvErr:
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				fmt.Fprintf(os.Stderr, "HTTP 时间服务器启动失败: %v\n", err)
+				stopNTP()
+				closeLog()
+				os.Exit(1)
+			}
+		case <-shutdownCh:
+			logf("收到退出信号，正在停止 HTTP/NTP 服务...")
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = srv.Shutdown(ctx)
+			cancel()
+			stopNTP()
+		}
+		closeLog()
+	case "doctor":
+		ec := resolveConfig()
+		os.Exit(runDoctor(ec))
+	case "service":
+		if err := serviceCommand(flag.Args()); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
 			os.Exit(1)
 		}
 	case "install":
@@ -177,33 +226,87 @@ func main() {
 	}
 }
 
+// shutdownCh 关闭后通知 runLoop / server 模式优雅退出；由信号处理器或 Windows 服务控制处理器触发。
+var (
+	shutdownOnce sync.Once
+	shutdownCh   = make(chan struct{})
+)
+
+func requestShutdown() {
+	shutdownOnce.Do(func() { close(shutdownCh) })
+}
+
+// installSignalHandler 安装 Ctrl+C / SIGTERM 处理：第一次请求优雅退出，第二次强制退出。
+func installSignalHandler() {
+	sig := make(chan os.Signal, 2)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sig
+		logf("收到退出信号，正在收尾（再按一次可强制退出）...")
+		requestShutdown()
+		<-sig
+		os.Exit(130)
+	}()
+}
+
+// retryBackoff 依据连续失败次数返回下次重试等待时长：30s → 2m → 10m（封顶）。
+func retryBackoff(failCount int) time.Duration {
+	switch {
+	case failCount <= 1:
+		return 30 * time.Second
+	case failCount == 2:
+		return 2 * time.Minute
+	default:
+		return 10 * time.Minute
+	}
+}
+
 func runLoop(first effectiveConfig) {
 	ec := first
 	logf("goTimeSync 启动 | 主备链=[%s] | 间隔=%d秒 | 检查=%v | 策略=%s",
 		strings.Join(chainLabels(ec), " > "), ec.Interval, ec.Check, ec.Strategy)
-	if err := doSync(ec); err != nil {
-		fmt.Fprintf(os.Stderr, "初始同步失败: %v\n", err)
-	}
-	interval := time.Duration(ec.Interval) * time.Second
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for range ticker.C {
-		ec = resolveConfig() // 每次循环重读配置，改文件即生效
-		// 热更新：间隔变化时重置 ticker；日志配置变化时重设日志输出（幂等，未变化则无操作）
-		if d := time.Duration(ec.Interval) * time.Second; d != interval {
-			interval = d
-			ticker.Reset(interval)
-			logf("同步间隔已热更新为 %d 秒", ec.Interval)
-		}
-		initLogger(ec.LogFile, ec.Quiet)
-		if err := doSync(ec); err != nil {
+
+	prevInterval := time.Duration(ec.Interval) * time.Second
+	failCount := 0
+	for {
+		err := doSync(ec)
+		if err != nil {
+			failCount++
 			fmt.Fprintf(os.Stderr, "[%s] 同步失败: %v\n",
 				time.Now().Format("2006-01-02 15:04:05"), err)
+		} else {
+			failCount = 0
+		}
+
+		// 每轮重读配置：改文件即生效；日志配置变化由 initLogger 幂等切换
+		ec = resolveConfig()
+		initLogger(ec.LogFile, ec.Quiet)
+
+		var wait time.Duration
+		if err != nil {
+			// 失败退避：30s→2m→10m 重试，避免干等完整间隔；成功后恢复正周期
+			wait = retryBackoff(failCount)
+			logf("同步失败，%s 后重试（连续第 %d 次失败）", wait, failCount)
+		} else {
+			if d := time.Duration(ec.Interval) * time.Second; d != prevInterval {
+				logf("同步间隔已热更新为 %d 秒", ec.Interval)
+			}
+			wait = time.Duration(ec.Interval) * time.Second
+		}
+		prevInterval = time.Duration(ec.Interval) * time.Second
+
+		select {
+		case <-time.After(wait):
+		case <-shutdownCh:
+			logf("goTimeSync 已停止")
+			return
 		}
 	}
 }
 
 // doSync 按策略完成一次同步：best 并发择优，fallback 顺序试错。
+// 两种策略下，偏移被大跳保护拒绝的源都会被跳过并尝试下一个源；
+// 全部失败/被拒时触发 failed 钩子。
 func doSync(ec effectiveConfig) error {
 	timeout := time.Duration(ec.Timeout) * time.Second
 	sources, err := buildChain(ec)
@@ -228,12 +331,17 @@ func doSync(ec effectiveConfig) error {
 		for i, s := range sources {
 			chs[i] = make(chan res, 1)
 			go func(s timeSource, ch chan res) {
-				c, o, d, e := querySource(s, timeout, ec.HTTPMethod)
+				c, o, d, e := querySourceStable(s, ec, timeout)
 				ch <- res{s, c, o, d, e}
 			}(s, chs[i])
 		}
-		// 总时限：所有并发源共享一个截止时间，避免个别慢源把整体拖到 N*timeout。
-		deadline := time.After(timeout)
+		// 总时限：所有并发源共享一个截止时间；多采样源按采样数放大预算（至少 1 个 timeout），
+		// 避免个别慢源把整体拖到 N*timeout*samples。
+		budget := timeout * time.Duration(ec.Samples)
+		if budget < timeout {
+			budget = timeout
+		}
+		deadline := time.After(budget)
 		var ok []res
 	loop:
 		for i := 0; i < len(chs); i++ {
@@ -245,7 +353,7 @@ func doSync(ec effectiveConfig) error {
 				select {
 				case r = <-chs[i]:
 				case <-deadline:
-					logf("best 策略达总时限 %v，停止等待其余源", timeout)
+					logf("best 策略达总时限，停止等待其余源")
 					break loop
 				}
 			}
@@ -256,6 +364,7 @@ func doSync(ec effectiveConfig) error {
 			ok = append(ok, r)
 		}
 		if len(ok) == 0 {
+			runHook(ec, "failed", "", 0, 0, "所有源失败")
 			writeStatusSafe(ec, "", 0, 0, false, "所有源失败")
 			return fmt.Errorf("所有时间源均失败（best 策略）")
 		}
@@ -272,6 +381,7 @@ func doSync(ec effectiveConfig) error {
 			}
 			return err
 		}
+		runHook(ec, "failed", "", 0, 0, lastErr.Error())
 		writeStatusSafe(ec, "", 0, 0, false, lastErr.Error())
 		return lastErr
 	}
@@ -280,7 +390,7 @@ func doSync(ec effectiveConfig) error {
 	// 偏移超过大跳阈值的源视为异常，拒绝后继续尝试下一个。
 	var lastErr error
 	for _, s := range sources {
-		c, o, d, e := querySource(s, timeout, ec.HTTPMethod)
+		c, o, d, e := querySourceStable(s, ec, timeout)
 		if e != nil {
 			lastErr = e
 			logf("源 %s 失败: %v，尝试下一个", s.label, e)
@@ -299,17 +409,70 @@ func doSync(ec effectiveConfig) error {
 	if lastErr == nil {
 		lastErr = fmt.Errorf("无可用的同步源")
 	}
+	runHook(ec, "failed", "", 0, 0, lastErr.Error())
 	writeStatusSafe(ec, "", 0, 0, false, lastErr.Error())
 	return fmt.Errorf("所有时间源均失败或被拒，最后错误: %w", lastErr)
 }
 
+// querySourceStable 对单个源连续采样 ec.Samples 次：全部成功且校准时间极差 ≤ 容差才视为有效，
+// 取偏移/延时/校准时间的中位数作为结果。Samples=1 时等价于直接 querySource。
+func querySourceStable(s timeSource, ec effectiveConfig, timeout time.Duration) (time.Time, time.Duration, time.Duration, error) {
+	if ec.Samples <= 1 {
+		return querySource(s, timeout, ec.HTTPMethod, ec.HTTPTimeLayout)
+	}
+	n := ec.Samples
+	tol := time.Duration(ec.SampleToleranceMs) * time.Millisecond
+	type sample struct {
+		corrected time.Time
+		offset    time.Duration
+		delay     time.Duration
+	}
+	ss := make([]sample, 0, n)
+	for i := 0; i < n; i++ {
+		c, o, d, err := querySource(s, timeout, ec.HTTPMethod, ec.HTTPTimeLayout)
+		if err != nil {
+			return time.Time{}, 0, 0, fmt.Errorf("采样 %d/%d 失败: %w", i+1, n, err)
+		}
+		ss = append(ss, sample{c, o, d})
+	}
+	minC, maxC := ss[0].corrected, ss[0].corrected
+	offs := make([]time.Duration, 0, n)
+	delays := make([]time.Duration, 0, n)
+	for _, x := range ss {
+		if x.corrected.Before(minC) {
+			minC = x.corrected
+		}
+		if x.corrected.After(maxC) {
+			maxC = x.corrected
+		}
+		offs = append(offs, x.offset)
+		delays = append(delays, x.delay)
+	}
+	if spread := maxC.Sub(minC); spread > tol {
+		return time.Time{}, 0, 0, fmt.Errorf("%d 次采样偏移波动 %s 超过容差 %dms，疑似不稳定源",
+			n, spread.Round(time.Millisecond), ec.SampleToleranceMs)
+	}
+	mi := medianIdx(offs)
+	return ss[mi].corrected, offs[mi], delays[medianIdx(delays)], nil
+}
+
+// medianIdx 返回按值排序后中位元素的原下标（偶数个取中间偏大者）。
+func medianIdx(ds []time.Duration) int {
+	idx := make([]int, len(ds))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.Slice(idx, func(a, b int) bool { return ds[idx[a]] < ds[idx[b]] })
+	return idx[len(idx)/2]
+}
+
 // querySource 按源类型调用对应客户端。
-func querySource(s timeSource, timeout time.Duration, httpMethod string) (time.Time, time.Duration, time.Duration, error) {
+func querySource(s timeSource, timeout time.Duration, httpMethod, httpLayout string) (time.Time, time.Duration, time.Duration, error) {
 	switch s.kind {
 	case "ntp":
 		return queryNTP(s.target, timeout)
 	case "http":
-		return queryHTTPTime(s.target, timeout, nil, httpMethod)
+		return queryHTTPTime(s.target, timeout, nil, httpMethod, httpLayout)
 	default:
 		return time.Time{}, 0, 0, fmt.Errorf("未知源类型: %s", s.kind)
 	}
@@ -354,19 +517,23 @@ func applyCorrection(ec effectiveConfig, src timeSource, corrected time.Time, of
 	case "skip":
 		logf("偏移 %s 小于阈值 %dms，跳过设置", offset.Abs().Round(time.Millisecond), ec.MinOffset)
 		writeStatusSafe(ec, src.label, offset, delay, true, "skipped(min-offset)")
+		runHook(ec, "skipped", src.label, offset, delay, "")
 		return nil
 	case "reject":
 		msg := fmt.Sprintf("偏移 %s 超过大跳阈值 %dms，疑似异常源，拒绝设置", offset.Abs().Round(time.Millisecond), ec.MaxOffset)
 		logf("%s", msg)
 		writeStatusSafe(ec, src.label, offset, delay, false, "rejected(max-offset)")
+		runHook(ec, "rejected", src.label, offset, delay, msg)
 		return fmt.Errorf("%w: %s", errOffsetRejected, msg)
 	}
 	if err := setSystemTimeFn(corrected); err != nil {
 		writeStatusSafe(ec, src.label, offset, delay, false, "set-failed: "+err.Error())
+		runHook(ec, "failed", src.label, offset, delay, err.Error())
 		return fmt.Errorf("设置系统时间失败: %w", err)
 	}
 	logf("已同步系统时间 -> %s", corrected.Format("2006-01-02 15:04:05 MST"))
 	writeStatusSafe(ec, src.label, offset, delay, true, "synced")
+	runHook(ec, "synced", src.label, offset, delay, "")
 	return nil
 }
 
@@ -380,6 +547,9 @@ func printUsage() {
   goTimeSync install                  注册为系统开机启动（Windows: 计划任务 / Linux: systemd / macOS: launchd）
   goTimeSync uninstall                移除开机启动
   goTimeSync status                   查看是否已注册开机启动
+  goTimeSync doctor                   环境诊断：管理员权限/端口占用/时间源连通性/配置检查
+  goTimeSync service install|uninstall|start|stop|status
+                                      Windows 原生服务（崩溃自动重启；需管理员，仅 Windows）
   goTimeSync version                  查看版本
 
 通用参数:
@@ -394,6 +564,13 @@ func printUsage() {
   -strategy string     多源策略: fallback(顺序试错) | best(并发择优取最小延时)（默认 fallback）
   -min-offset int      偏移阈值(ms)：绝对值小于该值则跳过设置（默认 0=不限制）
   -max-offset int      大跳保护(ms)：绝对值大于该值视为异常源，拒绝设置并尝试下一个（默认 0=不限制）
+  -samples int         单源连续采样次数（默认 1；N>1 取中位偏移，抵御单次网络抖动）
+  -sample-tolerance-ms int
+                       多次采样的偏移波动容差(ms)（默认 100；波动超限判为源不稳定）
+  -hook-url string    同步事件 Webhook 地址，事件后 POST JSON（event/source/offset_ms/delay_ms/error/time；仅 http/https）
+  -hook-events string  钩子触发事件，逗号分隔: synced,failed,rejected,skipped（默认 synced,failed,rejected）
+  -http-time-layout string
+                       HTTP 源自定义时间布局（Go time layout，如 "2006-01-02 15:04:05"），优先于内置格式解析
   -check               仅检查偏差，不修改系统时间
   -log string          日志根目录；按 该目录/年月/日.log 逐日落盘（如 logs\202608\8.log）
   -status-file string  同步状态文件路径（默认 同目录/goTimeSync.status.json，含最近10次历史）

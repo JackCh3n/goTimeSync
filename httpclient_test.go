@@ -48,7 +48,7 @@ func TestQueryHTTPTimeOK(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, off, d, err := queryHTTPTime(srv.URL, 5*time.Second, nil, "")
+	c, off, d, err := queryHTTPTime(srv.URL, 5*time.Second, nil, "", "")
 	if err != nil {
 		t.Fatalf("queryHTTPTime 失败: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestQueryHTTPTimePOST(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, _, _, err := queryHTTPTime(srv.URL, 5*time.Second, nil, "POST"); err != nil {
+	if _, _, _, err := queryHTTPTime(srv.URL, 5*time.Second, nil, "POST", ""); err != nil {
 		t.Fatalf("queryHTTPTime POST 失败: %v", err)
 	}
 	if gotMethod != "POST" {
@@ -86,7 +86,7 @@ func TestQueryHTTPTimeStatusError(t *testing.T) {
 		w.WriteHeader(500)
 	}))
 	defer srv.Close()
-	if _, _, _, err := queryHTTPTime(srv.URL, 5*time.Second, nil, ""); err == nil {
+	if _, _, _, err := queryHTTPTime(srv.URL, 5*time.Second, nil, "", ""); err == nil {
 		t.Fatal("期望 500 状态码返回错误")
 	}
 }
@@ -97,7 +97,7 @@ func TestQueryHTTPTimeNoRedirect(t *testing.T) {
 		w.WriteHeader(302)
 	}))
 	defer srv.Close()
-	if _, _, _, err := queryHTTPTime(srv.URL, 5*time.Second, nil, ""); err == nil {
+	if _, _, _, err := queryHTTPTime(srv.URL, 5*time.Second, nil, "", ""); err == nil {
 		t.Fatal("期望重定向（不跟随）返回错误")
 	}
 }
