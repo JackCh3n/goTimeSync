@@ -2,12 +2,66 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
+
+// captureStdout 捕获 fn 期间写入 os.Stdout 的内容（logf 经 logOut 间接引用 os.Stdout）。
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("创建管道失败: %v", err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	fn()
+	_ = w.Close()
+	os.Stdout = old
+	return <-done
+}
+
+// TestInitLoggerQuiet 验证安静模式仅写文件、非安静模式同时写控制台（回归：曾把 quiet 误接成含 stdout）。
+func TestInitLoggerQuiet(t *testing.T) {
+	dir := t.TempDir()
+	out := captureStdout(t, func() {
+		initLogger(dir, true) // 安静：仅文件
+		logf("quiet-line")
+		initLogger(dir, false) // 正常：文件+控制台
+		logf("loud-line")
+		initLogger("", false) // 还原默认
+	})
+	if strings.Contains(out, "quiet-line") {
+		t.Error("安静模式的日志不应输出到控制台")
+	}
+	if !strings.Contains(out, "loud-line") {
+		t.Error("非安静模式的日志应输出到控制台")
+	}
+	// 两种模式都应落盘（同目录同日文件）
+	entries, err := os.ReadDir(filepath.Join(dir, time.Now().Format("200601")))
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("日志文件未创建: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, time.Now().Format("200601"), entries[0].Name()))
+	if err != nil {
+		t.Fatalf("读取日志失败: %v", err)
+	}
+	for _, want := range []string{"quiet-line", "loud-line"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("日志文件缺少 %q", want)
+		}
+	}
+}
 
 func TestWriteStatusHistory(t *testing.T) {
 	dir := t.TempDir()

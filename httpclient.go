@@ -107,14 +107,16 @@ func parseBodyTime(body []byte) (time.Time, error) {
 	}
 	var r httpTimeResponse
 	if jsonErr := json.Unmarshal([]byte(raw), &r); jsonErr == nil {
-		switch {
-		case r.Time != "":
+		// 各字段依次尝试：time 解析失败不应阻断 unixMs/unix 备用字段
+		if r.Time != "" {
 			if ts, e := time.Parse(time.RFC3339Nano, r.Time); e == nil {
 				return ts.UTC(), nil
 			}
-		case r.UnixMs > 0:
+		}
+		if r.UnixMs > 0 {
 			return time.Unix(r.UnixMs/1000, (r.UnixMs%1000)*int64(time.Millisecond)).UTC(), nil
-		case r.Unix > 0:
+		}
+		if r.Unix > 0 {
 			return time.Unix(r.Unix, 0).UTC(), nil
 		}
 	}

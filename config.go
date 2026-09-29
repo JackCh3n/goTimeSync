@@ -179,9 +179,11 @@ func initLogger(logRoot string, quiet bool) {
 			d = nil
 		} else {
 			dw = d
-			w = d
-			if !quiet {
-				w = io.MultiWriter(d, os.Stdout)
+			if quiet {
+				w = d // 安静模式仅写文件
+			} else {
+				// 控制台在前：日志文件写失败（磁盘满/跨天打开失败）时不影响控制台输出
+				w = io.MultiWriter(os.Stdout, d)
 			}
 		}
 	}

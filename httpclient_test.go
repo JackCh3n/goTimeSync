@@ -15,6 +15,7 @@ func TestParseBodyTime(t *testing.T) {
 		wantErr bool
 	}{
 		{`{"time":"2026-07-10T12:00:00.000Z"}`, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC), false},
+		{`{"time":"garbage","unix":1783331459}`, time.Unix(1783331459, 0).UTC(), false}, // time 解析失败应回退 unix 字段
 		{`{"unix":1783331459}`, time.Unix(1783331459, 0).UTC(), false},
 		{`{"unixMs":1783331459123}`, time.Unix(1783331459, 123000000).UTC(), false},
 		{`2026-07-10T12:00:00Z`, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC), false},

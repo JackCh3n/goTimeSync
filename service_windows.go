@@ -103,8 +103,29 @@ func serviceInstall() error {
 	}
 	defer m.Disconnect()
 	if s, err := m.OpenService(taskName); err == nil {
+		// 旧服务存在：运行中先停止，避免“标记删除”状态下无法重建
+		if st, qerr := s.Query(); qerr == nil && (st.State == svc.Running || st.State == svc.StartPending) {
+			_, _ = s.Control(svc.Stop)
+			stopDeadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(stopDeadline) {
+				if st2, e2 := s.Query(); e2 != nil || st2.State == svc.Stopped {
+					break
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
 		_ = s.Delete()
 		_ = s.Close()
+		// 等待 SCM 真正移除服务条目后再重建
+		rmDeadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(rmDeadline) {
+			if chk, err := m.OpenService(taskName); err != nil {
+				break
+			} else {
+				_ = chk.Close()
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
 	}
 	s, err := m.CreateService(taskName, exe, mgr.Config{
 		StartType:   mgr.StartAutomatic,
